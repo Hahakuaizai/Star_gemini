@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>紫发猫耳少女 · 网页交互桌宠与精灵图集播放器</title>
+  <style>
+    :root {
+      --bg-app: #0f101a;
+      --panel: #171928;
+      --panel-border: #2a2e45;
+      --text: #eef0ff;
+      --muted: #9aa0be;
+      --accent: #a78bfa;
+      --accent-2: #f472b6;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(circle at 20% 10%, #1e1b38 0%, var(--bg-app) 60%);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 40px;
+    }
+
+    header {
+      width: 100%;
+      max-width: 980px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+      background: linear-gradient(90deg, #c4b5fd, #f9a8d4);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .badge {
+      font-size: 12px;
+      color: #d8d4ff;
+      background: rgba(167, 139, 250, 0.16);
+      border: 1px solid rgba(167, 139, 250, 0.35);
+      padding: 5px 10px;
+      border-radius: 999px;
+    }
+
+    .layout {
+      width: 100%;
+      max-width: 980px;
+      display: grid;
+      grid-template-columns: 1fr 330px;
+      gap: 18px;
+    }
+
+    @media (max-width: 820px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    /* Interactive Stage */
+    .stage-wrap {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 16px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .stage {
+      position: relative;
+      height: 460px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      transition: background 0.25s ease;
+    }
+
+    .stage.bg-checker {
+      background-color: #1f2233;
+      background-image:
+        linear-gradient(45deg, #2a2e45 25%, transparent 25%),
+        linear-gradient(-45deg, #2a2e45 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #2a2e45 75%),
+        linear-gradient(-45deg, transparent 75%, #2a2e45 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+    .stage.bg-white { background: #ffffff; }
+    .stage.bg-black { background: #000000; }
+    .stage.bg-wallpaper {
+      background: linear-gradient(135deg, #2e1065 0%, #4c1d95 40%, #831843 100%);
+    }
+
+    .pet-actor {
+      position: absolute;
+      width: 256px;
+      height: 256px;
+      cursor: grab;
+      touch-action: none;
+      transform-origin: center center;
+    }
+    .pet-actor:active { cursor: grabbing; }
+
+    /* Sprite sheet renderer (file:// safe, zero CORS) */
+    .sprite-viewport {
+      width: 256px;
+      height: 256px;
+      overflow: hidden;
+      position: relative;
+    }
+    .sprite-sheet-img {
+      position: absolute;
+      top: 0;
+      left: 0;
+      image-rendering: auto;
+      pointer-events: none;
+      will-change: transform;
+    }
+
+    .anim-webp-img {
+      width: 256px;
+      height: 256px;
+      display: none;
+      pointer-events: none;
+    }
+
+    /* Optional 10% safety guide overlay */
+    .guides {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      display: none;
+    }
+    .guides.visible { display: block; }
+    .guides::before {
+      content: "";
+      position: absolute;
+      inset: 10%;
+      border: 1.5px dashed rgba(244, 114, 182, 0.85);
+    }
+    .guides::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      border-left: 1px dashed rgba(94, 234, 212, 0.7);
+    }
+
+    .speech-bubble {
+      position: absolute;
+      top: -38px;
+      left: 50%;
+      transform: translateX(-50%) translateY(6px);
+      background: rgba(255, 255, 255, 0.96);
+      color: #2e1065;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 999px;
+      white-space: nowrap;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .speech-bubble.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .stage-hint {
+      position: absolute;
+      bottom: 10px;
+      left: 12px;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 8px;
+      background: rgba(15, 16, 26, 0.68);
+      color: #e2e8f0;
+      backdrop-filter: blur(4px);
+    }
+
+    /* Timeline bar */
+    .timeline-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .timeline-row input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+    }
+    .frame-readout {
+      font-variant-numeric: tabular-nums;
+      font-size: 13px;
+      color: var(--muted);
+      min-width: 112px;
+      text-align: right;
+    }
+
+    /* Controls panel */
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 16px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .group-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    button, select {
+      font-family: inherit;
+      font-size: 13px;
+      color: var(--text);
+      background: #23263d;
+      border: 1px solid #353a5a;
+      border-radius: 10px;
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    }
+    button:hover, select:hover {
+      background: #2d3150;
+      border-color: var(--accent);
+    }
+    button:active { transform: scale(0.97); }
+    button.primary {
+      background: linear-gradient(135deg, #7c3aed, #db2777);
+      border-color: transparent;
+      font-weight: 600;
+    }
+    button.active {
+      background: rgba(167, 139, 250, 0.25);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    select { width: 100%; }
+
+    .slider-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+    }
+    .slider-item input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent-2);
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .toggle-row input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .meta-box {
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--muted);
+      background: rgba(0, 0, 0, 0.22);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>紫发猫耳少女 · 网页交互动画演示</h1>
+    <span class="badge">WebP 无损透明 · 48 帧变速精灵图集</span>
+  </header>
+
+  <main class="layout">
+    <section class="stage-wrap">
+      <div class="stage bg-checker" id="stage">
+        <div class="pet-actor" id="petActor">
+          <div class="speech-bubble" id="bubble">耶！任务完成啦～ ✨</div>
+          <div class="sprite-viewport" id="spriteViewport">
+            <img class="sprite-sheet-img" id="spriteImg" alt="sprite sheet" />
+            <div class="guides" id="guides"></div>
+          </div>
+          <img class="anim-webp-img" id="animImg" alt="animated webp" />
+        </div>
+        <div class="stage-hint">💡 点击角色触发互动 · 按住可拖动位置</div>
+      </div>
+
+      <div class="timeline-row">
+        <button id="btnPrev" title="上一帧">◀</button>
+        <button id="btnPlay" class="primary">暂停</button>
+        <button id="btnNext" title="下一帧">▶</button>
+        <input type="range" id="frameSlider" min="0" max="47" value="0" />
+        <div class="frame-readout" id="frameReadout">帧 1 / 48 (180ms)</div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div>
+        <div class="group-title">动作选择（支持后续扩展全部 25 个动作）</div>
+        <select id="actionSelect"></select>
+      </div>
+
+      <div>
+        <div class="group-title">渲染模式</div>
+        <div class="btn-row">
+          <button id="modeSprite" class="active">精灵图集逐帧驱动</button>
+          <button id="modeWebp">动态 WebP 直播</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="group-title">背景切换（双底色抠图质检）</div>
+        <div class="btn-row" id="bgButtons">
+          <button data-bg="bg-checker" class="active">透明棋盘</button>
+          <button data-bg="bg-white">纯白底</button>
+          <button data-bg="bg-black">纯黑底</button>
+          <button data-bg="bg-wallpaper">渐变壁纸</button>
+        </div>
+      </div>
+
+      <div class="slider-item">
+        <div class="slider-header">
+          <span>播放倍速</span>
+          <strong id="speedVal">1.0x</strong>
+        </div>
+        <input type="range" id="speedSlider" min="0.4" max="2.0" step="0.1" value="1.0" />
+      </div>
+
+      <div class="slider-item">
+        <div class="slider-header">
+          <span>显示缩放</span>
+          <strong id="scaleVal">1.2x</strong>
+        </div>
+        <input type="range" id="scaleSlider" min="0.6" max="1.8" step="0.1" value="1.2" />
+      </div>
+
+      <label class="toggle-row">
+        <span>循环播放</span>
+        <input type="checkbox" id="chkLoop" checked />
+      </label>
+
+      <label class="toggle-row">
+        <span>显示 10% 安全红线与中轴线</span>
+        <input type="checkbox" id="chkGuides" />
+      </label>
+
+      <div class="btn-row">
+        <button id="btnResetPos">居中复位</button>
+        <button id="btnReplay">从第 1 帧重播</button>
+      </div>
+
+      <div class="meta-box" id="metaBox"></div>
+    </aside>
+  </main>
+
+  <script>
+    // =========================================================
+    // 动作注册表：后续每做好一个新动作，直接往这里追加一项即可
+    // =========================================================
+    const ACTIONS = [
+      {
+        id: "happy_jump",
+        name: "开心跃动庆祝（48帧流畅版）",
+        sheet: "../成品/happy_jump_sheet.webp",
+        anim: "../成品/happy_jump.webp",
+        cols: 8,
+        rows: 6,
+        frames: 48,
+        cellSize: 256,
+        quote: "耶！好开心呀～ ✨",
+        // 与 expand_48.py 一致的变速帧表（总时长 6.72s）
+        durations: Array.from({ length: 48 }, (_, i) => {
+          const fast = (i >= 8 && i < 16) || (i >= 24 && i < 32);
+          const hold = [0, 1, 17, 18, 19, 20, 21, 22, 32, 33, 46, 47].includes(i);
+          return fast ? 110 : (hold ? 180 : 140);
+        })
+      },
+      {
+        id: "wave_hello",
+        name: "元气挥手打招呼（36帧流畅版）",
+        sheet: "../成品/wave_hello_sheet.webp",
+        anim: "../成品/wave_hello.webp",
+        cols: 6,
+        rows: 6,
+        frames: 36,
+        cellSize: 256,
+        quote: "嗨～你好呀！👋✨",
+        durations: Array.from({ length: 36 }, (_, i) => {
+          const hold = [0, 1, 14, 20, 26, 34, 35].includes(i);
+          const fast = i >= 10 && i < 28 && !hold;
+          return fast ? 145 : (hold ? 240 : 185);
+        })
+      },
+      {
+        id: "idle",
+        name: "待机呼吸休闲（48帧循环）",
+        sheet: "../成品/idle_sheet.webp",
+        anim: "../成品/idle.webp",
+        cols: 8,
+        rows: 6,
+        frames: 48,
+        cellSize: 256,
+        quote: "……（轻轻呼吸中）",
+        durations: Array.from({ length: 48 }, (_, i) => {
+          const fast = [8, 9, 10, 11, 42, 43, 44, 45].includes(i);
+          const hold = [0, 3, 16, 17, 20, 21, 22, 23, 34, 35, 36, 37, 46, 47].includes(i);
+          return fast ? 110 : (hold ? 220 : 175);
+        })
+      },
+      {
+        id: "coding",
+        name: "专注写代码·戴摘眼镜版（48帧循环）",
+        sheet: "../成品/coding_sheet.webp",
+        anim: "../成品/coding.webp",
+        cols: 8,
+        rows: 6,
+        frames: 48,
+        cellSize: 256,
+        quote: "让我专心写会儿代码……✨",
+        durations: Array.from({ length: 48 }, (_, i) => {
+          const fast = i >= 9 && i <= 22 || (i >= 36 && i <= 38);
+          const hold = [0,1,2,3,4,5,6,31,32,33,34,35,43,44,45,46].includes(i);
+          return fast ? 135 : (hold ? 270 : 180);
+        })
+      }
+    ];
+
+    const stage = document.getElementById("stage");
+    const petActor = document.getElementById("petActor");
+    const spriteViewport = document.getElementById("spriteViewport");
+    const spriteImg = document.getElementById("spriteImg");
+    const animImg = document.getElementById("animImg");
+    const guides = document.getElementById("guides");
+    const bubble = document.getElementById("bubble");
+
+    const actionSelect = document.getElementById("actionSelect");
+    const frameSlider = document.getElementById("frameSlider");
+    const frameReadout = document.getElementById("frameReadout");
+    const btnPlay = document.getElementById("btnPlay");
+    const btnPrev = document.getElementById("btnPrev");
+    const btnNext = document.getElementById("btnNext");
+    const btnResetPos = document.getElementById("btnResetPos");
+    const btnReplay = document.getElementById("btnReplay");
+    const modeSprite = document.getElementById("modeSprite");
+    const modeWebp = document.getElementById("modeWebp");
+    const speedSlider = document.getElementById("speedSlider");
+    const speedVal = document.getElementById("speedVal");
+    const scaleSlider = document.getElementById("scaleSlider");
+    const scaleVal = document.getElementById("scaleVal");
+    const chkLoop = document.getElementById("chkLoop");
+    const chkGuides = document.getElementById("chkGuides");
+    const metaBox = document.getElementById("metaBox");
+
+    let currentAction = ACTIONS[0];
+    let frameIndex = 0;
+    let isPlaying = true;
+    let renderMode = "sprite"; // "sprite" | "webp"
+    let speed = 1.0;
+    let scale = 1.2;
+    let timerId = null;
+    let bubbleTimer = null;
+
+    // Populate action selector
+    ACTIONS.forEach((act, idx) => {
+      const opt = document.createElement("option");
+      opt.value = idx;
+      opt.textContent = act.name;
+      actionSelect.appendChild(opt);
+    });
+
+    function loadAction(act) {
+      currentAction = act;
+      frameIndex = 0;
+      frameSlider.max = act.frames - 1;
+      frameSlider.value = 0;
+
+      spriteImg.src = act.sheet;
+      spriteImg.style.width = `${act.cols * act.cellSize}px`;
+      spriteImg.style.height = `${act.rows * act.cellSize}px`;
+      animImg.src = act.anim;
+
+      const totalSec = (act.durations.reduce((a, b) => a + b, 0) / 1000).toFixed(2);
+      metaBox.innerHTML =
+        `<div><b>图集规格：</b>${act.cols} 列 × ${act.rows} 行（${act.frames} 帧）</div>` +
+        `<div><b>单格尺寸：</b>${act.cellSize} × ${act.cellSize} px</div>` +
+        `<div><b>标称时长：</b>${totalSec}s（变速节奏）</div>`;
+
+      renderFrame(0);
+      scheduleNext();
+    }
+
+    function renderFrame(idx) {
+      const { cols, cellSize, frames, durations } = currentAction;
+      frameIndex = ((idx % frames) + frames) % frames;
+      const col = frameIndex % cols;
+      const row = Math.floor(frameIndex / cols);
+      spriteImg.style.transform = `translate(${-col * cellSize}px, ${-row * cellSize}px)`;
+      frameSlider.value = frameIndex;
+      frameReadout.textContent = `帧 ${frameIndex + 1} / ${frames} (${durations[frameIndex]}ms)`;
+    }
+
+    function scheduleNext() {
+      clearTimeout(timerId);
+      if (!isPlaying || renderMode !== "sprite") return;
+      const ms = Math.max(20, Math.round(currentAction.durations[frameIndex] / speed));
+      timerId = setTimeout(() => {
+        if (frameIndex + 1 >= currentAction.frames) {
+          if (!chkLoop.checked) {
+            isPlaying = false;
+            btnPlay.textContent = "播放";
+            return;
+          }
+          renderFrame(0);
+        } else {
+          renderFrame(frameIndex + 1);
+        }
+        scheduleNext();
+      }, ms);
+    }
+
+    function showBubble(text) {
+      bubble.textContent = text;
+      bubble.classList.add("show");
+      clearTimeout(bubbleTimer);
+      bubbleTimer = setTimeout(() => bubble.classList.remove("show"), 1800);
+    }
+
+    function centerActor() {
+      const rect = stage.getBoundingClientRect();
+      petActor.style.left = `${(rect.width - 256) / 2}px`;
+      petActor.style.top = `${(rect.height - 256) / 2}px`;
+      petActor.style.transform = `scale(${scale})`;
+    }
+
+    // Controls
+    btnPlay.addEventListener("click", () => {
+      isPlaying = !isPlaying;
+      btnPlay.textContent = isPlaying ? "暂停" : "播放";
+      if (isPlaying) scheduleNext();
+      else clearTimeout(timerId);
+    });
+
+    btnPrev.addEventListener("click", () => {
+      isPlaying = false;
+      btnPlay.textContent = "播放";
+      clearTimeout(timerId);
+      renderFrame(frameIndex - 1);
+    });
+
+    btnNext.addEventListener("click", () => {
+      isPlaying = false;
+      btnPlay.textContent = "播放";
+      clearTimeout(timerId);
+      renderFrame(frameIndex + 1);
+    });
+
+    frameSlider.addEventListener("input", (e) => {
+      isPlaying = false;
+      btnPlay.textContent = "播放";
+      clearTimeout(timerId);
+      renderFrame(Number(e.target.value));
+    });
+
+    btnReplay.addEventListener("click", () => {
+      if (renderMode === "webp") {
+        animImg.src = `${currentAction.anim}?t=${Date.now()}`;
+      } else {
+        isPlaying = true;
+        btnPlay.textContent = "暂停";
+        renderFrame(0);
+        scheduleNext();
+      }
+      showBubble(currentAction.quote);
+    });
+
+    btnResetPos.addEventListener("click", centerActor);
+
+    speedSlider.addEventListener("input", (e) => {
+      speed = Number(e.target.value);
+      speedVal.textContent = `${speed.toFixed(1)}x`;
+      if (isPlaying) scheduleNext();
+    });
+
+    scaleSlider.addEventListener("input", (e) => {
+      scale = Number(e.target.value);
+      scaleVal.textContent = `${scale.toFixed(1)}x`;
+      petActor.style.transform = `scale(${scale})`;
+    });
+
+    chkGuides.addEventListener("change", (e) => {
+      guides.classList.toggle("visible", e.target.checked);
+    });
+
+    modeSprite.addEventListener("click", () => {
+      renderMode = "sprite";
+      modeSprite.classList.add("active");
+      modeWebp.classList.remove("active");
+      spriteViewport.style.display = "block";
+      animImg.style.display = "none";
+      scheduleNext();
+    });
+
+    modeWebp.addEventListener("click", () => {
+      renderMode = "webp";
+      modeWebp.classList.add("active");
+      modeSprite.classList.remove("active");
+      clearTimeout(timerId);
+      spriteViewport.style.display = "none";
+      animImg.style.display = "block";
+    });
+
+    document.getElementById("bgButtons").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-bg]");
+      if (!btn) return;
+      stage.className = `stage ${btn.dataset.bg}`;
+      document.querySelectorAll("#bgButtons button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+
+    actionSelect.addEventListener("change", (e) => {
+      loadAction(ACTIONS[Number(e.target.value)]);
+    });
+
+    // Drag & click interaction on the desktop pet
+    let dragging = false;
+    let moved = false;
+    let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+
+    petActor.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      moved = false;
+      petActor.setPointerCapture(e.pointerId);
+      startX = e.clientX;
+      startY = e.clientY;
+      origLeft = parseFloat(petActor.style.left) || 0;
+      origTop = parseFloat(petActor.style.top) || 0;
+    });
+
+    petActor.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (Math.hypot(dx, dy) > 4) moved = true;
+      petActor.style.left = `${origLeft + dx}px`;
+      petActor.style.top = `${origTop + dy}px`;
+    });
+
+    petActor.addEventListener("pointerup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+      petActor.releasePointerCapture(e.pointerId);
+      if (!moved) {
+        // Trigger joyful replay + speech bubble on click
+        showBubble(currentAction.quote);
+        if (renderMode === "sprite") {
+          isPlaying = true;
+          btnPlay.textContent = "暂停";
+          renderFrame(0);
+          scheduleNext();
+        }
+      }
+    });
+
+    window.addEventListener("resize", centerActor);
+    loadAction(ACTIONS[0]);
+    centerActor();
+  </script>
+</body>
+</html>
