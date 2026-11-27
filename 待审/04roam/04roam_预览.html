@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>04 原地轻快踏步 · 48 帧版待审</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #14121b; color: #e8e4f2; font-family: "Segoe UI", system-ui, "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: .5px; margin: 0 0 6px; }
+  h1 span { color: #a896d8; font-weight: 400; font-size: 13px; margin-left: 10px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 26px; }
+  .chip { background: #211d2c; border: 1px solid #322b45; border-radius: 8px; padding: 7px 12px; font-size: 12.5px; color: #b8afd0; }
+  .chip b { color: #e8e4f2; font-weight: 600; }
+  .row { display: flex; gap: 22px; flex-wrap: wrap; }
+  .card { background: #1b1825; border: 1px solid #2c2740; border-radius: 12px; padding: 16px; }
+  .card.half { flex: 1 1 460px; }
+  .card h2 { font-size: 13px; font-weight: 500; color: #9d93bb; margin: 0 0 12px; letter-spacing: .4px; }
+  .stage { border-radius: 8px; overflow: hidden; }
+  .stage.white { background: #ffffff; }
+  .stage.black { background: #000000; }
+  .stage.checker { background-image: linear-gradient(45deg,#3a3550 25%,transparent 25%,transparent 75%,#3a3550 75%), linear-gradient(45deg,#3a3550 25%,transparent 25%,transparent 75%,#3a3550 75%); background-size: 24px 24px; background-position: 0 0, 12px 12px; }
+  img { display: block; width: 100%; }
+  .toggle { display: flex; gap: 8px; margin-top: 14px; }
+  button { background: #2a2537; color: #cfc8e2; border: 1px solid #3a3350; border-radius: 7px; padding: 7px 14px; font-size: 12.5px; cursor: pointer; }
+  button.on { background: #4b3d78; border-color: #6b56a8; color: #fff; }
+  .note { margin-top: 10px; font-size: 12.5px; line-height: 1.85; color: #8f87a8; }
+  .sheet { margin-top: 34px; }
+  .two { display: flex; gap: 22px; flex-wrap: wrap; }
+  .two .card { flex: 1 1 460px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>04 原地轻快踏步 roam<span>48 帧版 · 待审 · 未替换旧成品</span></h1>
+  <div class="stats">
+    <div class="chip">帧数 <b>48</b>（基准 36）</div>
+    <div class="chip">图集 <b>8 × 6 · 3072 × 2304</b></div>
+    <div class="chip">总时长 <b>7.000 s</b></div>
+    <div class="chip">单帧 <b>95 – 277 ms</b></div>
+    <div class="chip">帧间动度均值 <b>33.9</b>（基准 46.1）</div>
+    <div class="chip">帧间动度峰值 <b>67.6</b>（基准 80.8）</div>
+    <div class="chip">主体身高 <b>305 – 308 px</b></div>
+    <div class="chip">脚底 <b>365 – 366 px</b></div>
+    <div class="chip">首尾 <b>完全重合</b></div>
+  </div>
+
+  <div class="two">
+    <div class="card">
+      <h2>48 帧版 · 待审（候选）</h2>
+      <div class="stage checker" id="stage48"><img src="./04roam（踏步_动画）.webp"></div>
+      <div class="toggle">
+        <button class="on" data-bg="checker" data-target="stage48">棋盘</button>
+        <button data-bg="white" data-target="stage48">白底</button>
+        <button data-bg="black" data-target="stage48">黑底</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>36 帧基准 · 上一版精修</h2>
+      <div class="stage checker" id="stage36"><img src="./36帧基准/04roam（踏步_动画）.webp"></div>
+      <div class="toggle">
+        <button class="on" data-bg="checker" data-target="stage36">棋盘</button>
+        <button data-bg="white" data-target="stage36">白底</button>
+        <button data-bg="black" data-target="stage36">黑底</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card sheet">
+    <h2>单文件并排动图 · 左 36 帧基准 / 右 48 帧版（按时间对齐）</h2>
+    <div class="stage checker"><img src="./对照_动画_36vs48.webp"></div>
+  </div>
+
+  <div class="card sheet">
+    <h2>帧间动度曲线 · 横轴为播放时间</h2>
+    <div class="stage white"><img src="./对照_动度曲线_36vs48.png"></div>
+  </div>
+
+  <div class="card sheet">
+    <h2>图集对照 · 白底（左 36 帧基准 / 右 48 帧版）</h2>
+    <div class="stage white"><img src="./对照_图集_36vs48_白底.png"></div>
+  </div>
+
+  <div class="card sheet">
+    <h2>图集对照 · 黑底</h2>
+    <div class="stage black"><img src="./对照_图集_36vs48_黑底.png"></div>
+  </div>
+
+  <div class="card sheet">
+    <h2>48 帧质检图 · 白底 / 黑底（带帧号）</h2>
+    <div class="stage white"><img src="./04roam_white.png"></div>
+    <div class="stage black" style="margin-top:12px"><img src="./04roam_black.png"></div>
+  </div>
+
+  <div class="card sheet">
+    <h2>旧版 · 现役 成品（未改动）</h2>
+    <div class="stage checker"><img src="../../成品/04roam（踏步_动画）.webp"></div>
+    <div class="stage white" style="margin-top:12px"><img src="../36帧基准/对照_动画_旧vs36.webp"></div>
+  </div>
+</div>
+<script>
+document.querySelectorAll('button').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var stage = document.getElementById(b.dataset.target);
+    stage.className = 'stage ' + b.dataset.bg;
+    b.parentElement.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+    b.classList.add('on');
+  });
+});
+</script>
+</body>
+</html>

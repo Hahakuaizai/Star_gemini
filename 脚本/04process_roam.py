@@ -1,128 +1,306 @@
+import math
+import os
+import sys
+
 import numpy as np
-from PIL import Image
-from scipy import ndimage
-import os, json
+from PIL import Image, ImageDraw
+from scipy.ndimage import gaussian_filter, label, map_coordinates, zoom
 
-HOME = os.path.expanduser("~")
-BASE = f"{HOME}/workspace/star_cat_girl/roam"
-SHEETS = [
-    "media-generation-roam-seg1-0-bb854903-0688-42db-be95-ace51de0ec76.webp",
-    "media-generation-roam-seg2-0-56a63e27-ed95-4e0e-bd51-89e871dcd5a1.webp",
-    "media-generation-roam-seg3b-0-c83e4440-89a0-4330-a5b7-5dab20c8a93a.webp",
-]
+G = r"C:\Users\30894\Desktop\workspace\帧动画\gemini"
+SRC_DIR = os.path.join(G, "待审", "04roam")
+SRC_SHEET = os.path.join(SRC_DIR, "36帧基准", "04roam_sheet（踏步_图集）.webp")
+OUT_DIR = os.path.join(SRC_DIR)
+CANVAS = 384
+COLS, ROWS = 8, 6
+TOTAL_MS = 7000
+TARGET = 48
+DROP_COUNT = 4
+MIN_FRAME_MS = 95
 
-def cutout(cell):
-    """Black-bg cutout: border flood (max<46) + pocket rule; keep detached sparkles."""
-    rgb = np.asarray(cell.convert("RGB")).astype(np.int32)
-    mx = rgb.max(axis=2)
-    sat = (mx - rgb.min(axis=2)) / np.maximum(mx, 1)
-    dark = mx < 46
-    # border-connected dark
-    lab, n = ndimage.label(dark)
-    border_ids = set(np.unique(np.concatenate([lab[0, :], lab[-1, :], lab[:, 0], lab[:, -1]]))) - {0}
-    alpha = np.ones(mx.shape, np.uint8) * 255
-    for i in border_ids:
-        alpha[lab == i] = 0
-    # pockets: enclosed dark components
-    for i in range(1, n + 1):
-        if i in border_ids:
-            continue
-        m = lab == i
-        if m.sum() < 4:
-            alpha[m] = 0
-        elif mx[m].mean() < 40 and sat[m].mean() < 0.16:
-            alpha[m] = 0
-    # remove specks < 8 px among opaque
-    lab2, n2 = ndimage.label(alpha > 0)
-    for i in range(1, n2 + 1):
-        m = lab2 == i
-        if m.sum() < 8:
-            alpha[m] = 0
-    out = np.dstack([rgb.astype(np.uint8), alpha])
-    return Image.fromarray(out, "RGBA"), lab2, alpha
 
-def main_stats(alpha):
-    lab, n = ndimage.label(alpha > 0)
-    sizes = ndimage.sum(alpha > 0, lab, range(1, n + 1))
-    main_id = 1 + int(np.argmax(sizes))
-    m = lab == main_id
+def load36():
+    sheet = Image.open(SRC_SHEET).convert("RGBA")
+    out = []
+    for i in range(36):
+        r, c = divmod(i, 6)
+        out.append(sheet.crop((c * CANVAS, r * CANVAS, c * CANVAS + CANVAS, r * CANVAS + CANVAS)))
+    return out
+
+
+def body_metrics(img):
+    a = np.array(img, dtype=np.uint8)
+    al = a[:, :, 3]
+    lab, n = label(al > 60)
+    if n == 0:
+        return 0, 0, 0, 0, 0
+    s = np.bincount(lab.ravel())
+    s[0] = 0
+    m = lab == int(s.argmax())
     ys, xs = np.where(m)
-    return m, xs.min(), xs.max(), ys.min(), ys.max()
+    return int(ys.max() - ys.min() + 1), int(ys.max()), int(xs.max() - xs.min() + 1), int((al > 20).sum()), int(xs.min() + xs.max()) // 2
 
-# --- slice + cutout ---
-cells = []
-for si, name in enumerate(SHEETS):
-    im = Image.open(f"{BASE}/{name}")
-    w, h = im.size
-    cw, ch = w // 4, h // 3
-    for r in range(3):
-        for c in range(4):
-            cells.append(im.crop((c * cw, r * ch, (c + 1) * cw, (r + 1) * ch)))
-print("cells:", len(cells))
 
-cut = []
-heights = []
-for i, cell in enumerate(cells):
-    rgba, lab2, alpha = cutout(cell)
-    m, x0, x1, y0, y1 = main_stats(alpha)
-    heights.append(y1 - y0 + 1)
-    cut.append((rgba, alpha))
-    rgba.save(f"{BASE}/frames/r{i+1:02d}_raw.png")
-med = float(np.median(heights))
-seg_meds = [float(np.median(heights[i*12:(i+1)*12])) for i in range(3)]
-print("main-comp heights:", heights)
-print("median:", med, "per-segment medians:", seg_meds)
+def feature(arr):
+    al = arr[:, :, 3].astype(np.float32) / 255.0
+    lum = (0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]) / 255.0
+    return lum * al + 0.45 * al
 
-# --- per-segment scale + placement ---
-TARGET_H, FEET_Y = 305, 372
-seg_scales = [TARGET_H / m for m in seg_meds]
-print("per-segment scales:", [round(s, 4) for s in seg_scales])
-scale = seg_scales[0]
 
-def place(rgba, alpha, sc):
-    im = rgba.resize((round(rgba.width * sc), round(rgba.height * sc)), Image.LANCZOS)
-    a = np.array(im.split()[3])
-    a = np.where(a >= 128, 255, 0).astype(np.uint8)
-    im.putalpha(Image.fromarray(a))
-    m, x0, x1, y0, y1 = main_stats(a)
-    # head centre-x: centroid of main-comp pixels in top 30% of bbox
-    hgt = y1 - y0 + 1
-    band = m.copy()
-    band[y0 + int(hgt * 0.30):, :] = False
-    ys, xs = np.where(band)
-    head_cx = xs.mean()
-    return im, head_cx, (x0, x1, y0, y1)
+def flow(i1, i2, levels=4, win_sigma=3.5, iters=6):
+    p1 = [i1.astype(np.float32)]
+    p2 = [i2.astype(np.float32)]
+    for _ in range(1, levels):
+        p1.append(gaussian_filter(p1[-1], 1.0)[::2, ::2])
+        p2.append(gaussian_filter(p2[-1], 1.0)[::2, ::2])
+    vx = np.zeros_like(p1[-1], dtype=np.float32)
+    vy = np.zeros_like(p1[-1], dtype=np.float32)
+    for lvl in range(levels - 1, -1, -1):
+        a1 = p1[lvl]
+        a2 = p2[lvl]
+        lh, lw = a1.shape
+        if lvl < levels - 1:
+            sy = lh / vx.shape[0]
+            sx = lw / vx.shape[1]
+            vx = zoom(vx, (sy, sx), order=1) * sx
+            vy = zoom(vy, (sy, sx), order=1) * sy
+        yy, xx = np.mgrid[0:lh, 0:lw].astype(np.float32)
+        for _ in range(iters):
+            wx = np.clip(xx + vx, 0, lw - 1)
+            wy = np.clip(yy + vy, 0, lh - 1)
+            w2 = map_coordinates(a2, [wy, wx], order=1, mode="nearest")
+            ix = np.gradient(w2, axis=1)
+            iy = np.gradient(w2, axis=0)
+            it = w2 - a1
+            sxx = gaussian_filter(ix * ix, win_sigma) + 1e-3
+            syy = gaussian_filter(iy * iy, win_sigma) + 1e-3
+            sxy = gaussian_filter(ix * iy, win_sigma)
+            sxt = gaussian_filter(ix * it, win_sigma)
+            syt = gaussian_filter(iy * it, win_sigma)
+            det = sxx * syy - sxy * sxy + 1e-4
+            dvx = np.clip(-(syy * sxt - sxy * syt) / det, -2.5, 2.5)
+            dvy = np.clip(-(sxx * syt - sxy * sxt) / det, -2.5, 2.5)
+            vx = gaussian_filter(vx + dvx, 1.2)
+            vy = gaussian_filter(vy + dvy, 1.2)
+    return vx, vy
 
-placed = [place(rgba, alpha, seg_scales[i // 12]) for i, (rgba, alpha) in enumerate(cut)]
-# target head-cx: centre base frame's bbox at 192
-im0, hcx0, (bx0, bx1, by0, by1) = placed[0]
-TARGET_HCX = hcx0 + (192 - (bx0 + bx1) / 2)
-print("target head-cx:", round(TARGET_HCX, 1))
 
-finals = []
-report = []
-for i, (im, hcx, (x0, x1, y0, y1)) in enumerate(placed):
-    canvas = Image.new("RGBA", (384, 384), (0, 0, 0, 0))
-    dx = int(round(TARGET_HCX - hcx))
-    dy = int(round(FEET_Y - y1))
-    canvas.alpha_composite(im, (dx, dy))
-    finals.append(canvas)
-    a = np.array(canvas.split()[3])
-    ys, xs = np.where(a > 0)
-    semi = int(((a > 0) & (a < 255)).sum())
-    report.append(dict(frame=i + 1, bbox=[int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
-                       margin=[int(xs.min()), int(ys.min()), int(383 - xs.max()), int(383 - ys.max())],
-                       semi=semi))
-    canvas.save(f"{BASE}/proc/r{i+1:02d}.png")
+def warp(arr, dx, dy):
+    h, w, _ = arr.shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    sy = np.clip(yy + dy, 0, h - 1)
+    sx = np.clip(xx + dx, 0, w - 1)
+    alpha = arr[:, :, 3].astype(np.float32) / 255.0
+    out = np.zeros((h, w, 4), dtype=np.float32)
+    wa = map_coordinates(alpha, [sy, sx], order=1, mode="constant", cval=0.0)
+    for c in range(3):
+        prem = arr[:, :, c].astype(np.float32) * alpha
+        wc = map_coordinates(prem, [sy, sx], order=1, mode="constant", cval=0.0)
+        out[:, :, c] = np.where(wa > 1e-3, np.clip(wc / np.maximum(wa, 1e-3), 0, 255), 0.0)
+    out[:, :, 3] = np.clip(wa * 255.0, 0, 255)
+    return out
 
-# frame 36 := frame 1 (doc: first == last pixel-identical)
-finals[35] = finals[0].copy()
-finals[35].save(f"{BASE}/proc/r36.png")
-d = np.abs(np.asarray(finals[35]).astype(int) - np.asarray(finals[0]).astype(int)).max()
-print("seam frame36 vs frame1 max diff:", d)
-print("semi-transparent px total:", sum(r["semi"] for r in report))
-for r in report:
-    if min(r["margin"]) < 6:
-        print("TIGHT MARGIN:", r)
-json.dump(report, open(f"{BASE}/proc/report.json", "w"), indent=1)
-print("done")
+
+def interp(im_a, im_b, t, flows, near=None, seam=258):
+    a = np.array(im_a, dtype=np.uint8)
+    b = np.array(im_b, dtype=np.uint8)
+    vx_ab, vy_ab, vx_ba, vy_ba = flows
+    wa = warp(a, -t * vx_ab, -t * vy_ab)
+    wb = warp(b, -(1.0 - t) * vx_ba, -(1.0 - t) * vy_ba)
+
+    rgb_d = np.abs(wa[:, :, :3] - wb[:, :, :3]).mean(axis=2) / 255.0
+    alpha_d = np.abs(wa[:, :, 3] - wb[:, :, 3]) / 255.0
+    disagree = rgb_d * 0.7 + alpha_d * 0.9
+    agree = np.clip(1.0 - disagree * 3.2, 0.0, 1.0)
+    pick_a = (wa[:, :, 3] >= wb[:, :, 3]).astype(np.float32)
+    w_a = t * agree + pick_a * (1.0 - agree)
+    w_b = 1.0 - w_a
+
+    aa = wa[:, :, 3] / 255.0
+    ab = wb[:, :, 3] / 255.0
+    out_a = w_a * aa + w_b * ab
+    out = np.zeros_like(wa)
+    for c in range(3):
+        num = w_a * wa[:, :, c] * aa + w_b * wb[:, :, c] * ab
+        out[:, :, c] = np.where(out_a > 1e-3, np.clip(num / np.maximum(out_a, 1e-3), 0, 255), 0.0)
+
+    if near is not None:
+        n = np.array(near, dtype=np.float32)
+        na = n[:, :, 3] / 255.0
+        h = out.shape[0]
+        yg = np.arange(h, dtype=np.float32)[:, None]
+        band = np.clip((yg - (seam - 36)) / 36.0, 0.0, 1.0)
+        band = band * band * (3.0 - 2.0 * band)
+        pw = band
+        oa = out_a * (1.0 - pw) + na * pw
+        for c in range(3):
+            out[:, :, c] = np.where(oa > 1e-3,
+                                    np.clip((out[:, :, c] * out_a * (1.0 - pw) + n[:, :, c] * na * pw) / np.maximum(oa, 1e-3), 0, 255),
+                                    0.0)
+        out_a = oa
+
+    a8 = np.clip(out_a * 255.0, 0, 255)
+    out[:, :, 3] = np.where(a8 < 26, 0.0, np.where(a8 > 226, 255.0, (a8 - 26.0) / 200.0 * 255.0))
+    res = out.astype(np.uint8)
+    res[res[:, :, 3] < 5] = 0
+    return Image.fromarray(res, "RGBA")
+
+
+def leg_lock(mid, near, seam=300, feather=18):
+    a = np.array(mid, dtype=np.float32)
+    b = np.array(near, dtype=np.float32)
+    h = a.shape[0]
+    wgt = np.zeros(h, dtype=np.float32)
+    top = seam - feather
+    bot = seam + feather
+    for y in range(h):
+        if y <= top:
+            wgt[y] = 0.0
+        elif y >= bot:
+            wgt[y] = 1.0
+        else:
+            t = (y - top) / float(bot - top)
+            wgt[y] = t * t * (3.0 - 2.0 * t)
+    wgt = wgt[:, None, None]
+    ab = a[:, :, 3:4] / 255.0
+    bb = b[:, :, 3:4] / 255.0
+    out_a = ab * (1.0 - wgt) + bb * wgt
+    rgb = (a[:, :, :3] * ab * (1.0 - wgt) + b[:, :, :3] * bb * wgt) / np.maximum(out_a, 1e-4)
+    out = np.empty_like(a)
+    out[:, :, :3] = np.clip(rgb, 0, 255)
+    out[:, :, 3] = np.clip(out_a * 255.0, 0, 255)
+    res = out.astype(np.uint8)
+    res[res[:, :, 3] < 5] = 0
+    return Image.fromarray(res, "RGBA")
+
+
+def motion(img_a, img_b):
+    a = np.array(img_a, dtype=np.float32)
+    b = np.array(img_b, dtype=np.float32)
+    return float(np.abs(a[:, :, :3] - b[:, :, :3]).mean() * (a[:, :, 3] > 20).mean())
+
+
+def pick_drops(n, diffs):
+    cand = sorted((diffs[i - 1], i) for i in range(1, n - 3))
+    return sorted(i for _, i in cand[:DROP_COUNT])
+
+
+def weights(n):
+    w = []
+    for i in range(n):
+        if i == 0 or i == n - 1:
+            w.append(1.30)
+        elif i < 6:
+            w.append(1.04 - 0.03 * i)
+        elif i >= n - 6:
+            w.append(1.02 + 0.05 * (i - (n - 6)))
+        else:
+            w.append(1.0 + 0.06 * math.sin(i * 0.7))
+    return w
+
+
+def schedule(n_native, plan):
+    base = weights(n_native)
+    nat = [max(120, int(round(w * TOTAL_MS / sum(base)))) for w in base]
+    nat[-1] += TOTAL_MS - sum(nat)
+    pieces = []
+    for i, t in enumerate(nat):
+        k = len(plan.get(i, []))
+        share = max(MIN_FRAME_MS, t // (k + 1))
+        pieces.append(share)
+        pieces.extend([share] * k)
+    scaled = [max(MIN_FRAME_MS, int(round(p * TOTAL_MS / sum(pieces)))) for p in pieces]
+    diff = TOTAL_MS - sum(scaled)
+    idx = 0
+    while diff != 0:
+        j = idx % len(scaled)
+        if diff > 0:
+            scaled[j] += 1
+            diff -= 1
+        elif scaled[j] > MIN_FRAME_MS + 1:
+            scaled[j] -= 1
+            diff += 1
+        idx += 1
+    return scaled
+
+
+def lowdiff(a, b, top=300):
+    x = np.array(a, dtype=np.float32)[top:, :, :]
+    y = np.array(b, dtype=np.float32)[top:, :, :]
+    msk = (x[:, :, 3] > 20) | (y[:, :, 3] > 20)
+    if not msk.any():
+        return 0.0
+    return float(np.abs(x[:, :, :3] - y[:, :, :3]).mean(2)[msk].mean())
+
+
+if __name__ == "__main__":
+    src = load36()
+    diffs = [motion(src[i], src[i + 1]) for i in range(len(src) - 1)]
+    drops = pick_drops(len(src), diffs)
+    keep = [f for i, f in enumerate(src) if i not in set(drops)]
+    keep[-1] = keep[0].copy()
+
+    meta = [body_metrics(f) for f in keep]
+    scored = []
+    for i in range(len(keep) - 1):
+        scored.append((motion(keep[i], keep[i + 1]), lowdiff(keep[i], keep[i + 1]), i))
+    scored.sort(reverse=True)
+
+    need = TARGET - len(keep)
+    gaps = need
+    plan = {}
+    for m, ld, i in scored[:gaps]:
+        plan[i] = [0.5]
+
+    print("dropped", [i + 1 for i in drops])
+    print("kept", len(keep), "insert", sum(len(v) for v in plan.values()))
+    for m, ld, i in scored[:gaps]:
+        print("  gap after kept#%d motion=%.2f lowdiff=%.1f" % (i + 1, m, ld))
+
+    flows_cache = {}
+    seq = []
+    for i, f in enumerate(keep):
+        seq.append(f)
+        for t in plan.get(i, []):
+            key = i
+            if key not in flows_cache:
+                fa = feature(np.array(keep[i], dtype=np.uint8))
+                fb = feature(np.array(keep[i + 1], dtype=np.uint8))
+                flows_cache[key] = flow(fa, fb) + flow(fb, fa)
+            seq.append(interp(keep[i], keep[i + 1], t, flows_cache[key], near=keep[i] if t <= 0.5 else keep[i + 1]))
+
+    assert len(seq) == TARGET, len(seq)
+
+    bad = []
+    for i, f in enumerate(seq):
+        hm, fm, wm, am, cm = body_metrics(f)
+        if abs(hm - 306) > 3 or abs(fm - 366) > 2:
+            bad.append((i + 1, hm, fm))
+    print("frames off anchor:", bad)
+
+    durs = schedule(len(keep), plan)
+    assert sum(durs) == TOTAL_MS, sum(durs)
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+    sheet = Image.new("RGBA", (COLS * CANVAS, ROWS * CANVAS), (0, 0, 0, 0))
+    for i, f in enumerate(seq):
+        r, c = divmod(i, COLS)
+        sheet.paste(f, (c * CANVAS, r * CANVAS), f)
+
+    anim_path = os.path.join(OUT_DIR, "04roam（踏步_动画）.webp")
+    sheet_path = os.path.join(OUT_DIR, "04roam_sheet（踏步_图集）.webp")
+    seq[0].save(anim_path, format="WEBP", save_all=True, append_images=seq[1:],
+                duration=durs, loop=0, lossless=True, quality=100, disposal=2, minimize_size=False)
+    sheet.save(sheet_path, format="WEBP", lossless=True, quality=100, method=6)
+
+    for tone, bg in (("white", (255, 255, 255, 255)), ("black", (0, 0, 0, 255))):
+        comp = Image.new("RGBA", sheet.size, bg)
+        comp.alpha_composite(sheet)
+        comp = comp.convert("RGB")
+        d = ImageDraw.Draw(comp)
+        for i in range(TARGET):
+            r, c = divmod(i, COLS)
+            d.text((c * CANVAS + 8, r * CANVAS + 6), str(i + 1), fill=(210, 30, 30))
+        comp.save(os.path.join(OUT_DIR, "04roam_%s.png" % tone))
+
+    print("durations min/max/total", min(durs), max(durs), sum(durs))
+    print(anim_path)
