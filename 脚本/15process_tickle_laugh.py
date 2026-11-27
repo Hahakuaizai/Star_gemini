@@ -119,9 +119,7 @@ def align_part2_with_ref_boots(f: Image.Image, ref_stand: Image.Image) -> Image.
     out = c_arr.copy()
     for y in range(seam_y, CANVAS):
         t = min(1.0, (y - seam_y) / max(1.0, float(feather)))
-        out[y, 138:246, :] = (1.0 - t) * c_arr[y, 138:246, :] + t * r_flt[y, 138:246, :]
-    out[seam_y + 2:, :138, :] = 0.0
-    out[seam_y + 2:, 246:, :] = 0.0
+        out[y, :, :] = (1.0 - t) * c_arr[y, :, :] + t * r_flt[y, :, :]
 
     return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGBA")
 
