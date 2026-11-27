@@ -499,6 +499,22 @@
         durations: Array.from({ length: 48 }, (_, i) =>
           Math.round(125 + 45 * Math.abs(Math.sin(2 * Math.PI * i / 24)))
         )
+      },
+      {
+        id: "15tickle_laugh",
+        name: "15. 挠痒咯咯大笑（48帧超流畅版）",
+        sheet: "../成品/15tickle_laugh_sheet（挠痒大笑_图集）.webp",
+        anim: "../成品/15tickle_laugh（挠痒大笑_动画）.webp",
+        cols: 8,
+        rows: 6,
+        frames: 48,
+        cellSize: 384,
+        quote: "哈哈哈哈好痒啊别挠啦～♪",
+        durations: Array.from({ length: 48 }, (_, i) => {
+          const fast = i >= 3 && i < 28;
+          const hold = [0, 1, 34, 35, 39, 40, 41, 46, 47].includes(i);
+          return fast ? 120 : (hold ? 215 : 155);
+        })
       }
     ];
 
