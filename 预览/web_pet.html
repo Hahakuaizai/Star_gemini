@@ -469,6 +469,22 @@
           const hold = [0,1,2,3,4,5,6,31,32,33,34,35,43,44,45,46].includes(i);
           return fast ? 135 : (hold ? 270 : 180);
         })
+      },
+      {
+        id: "13tsundere",
+        name: "13. 傲娇抱胸侧转（64帧超流畅版）",
+        sheet: "../成品/13tsundere_sheet（傲娇抱胸_图集）.webp",
+        anim: "../成品/13tsundere（傲娇抱胸_动画）.webp",
+        cols: 8,
+        rows: 8,
+        frames: 64,
+        cellSize: 384,
+        quote: "哼！才、才不是为了你呢！💢",
+        durations: Array.from({ length: 64 }, (_, i) => {
+          const fast = (i >= 4 && i < 18) || (i >= 48 && i < 56);
+          const hold = [0,1,21,22,25,26,41,42,45,46,62,63].includes(i);
+          return fast ? 85 : (hold ? 165 : 115);
+        })
       }
     ];
 
