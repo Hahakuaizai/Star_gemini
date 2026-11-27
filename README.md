@@ -1,1 +1,1 @@
-形象由Gemini生成，muse，豆包，DeepSeek协助完成图集生成。
+形象由Gemini生成；webp图集由muse，豆包，DeepSeek Harness和Antigravity协同制作。
