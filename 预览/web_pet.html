@@ -472,19 +472,33 @@
       },
       {
         id: "13tsundere",
-        name: "13. 傲娇抱胸侧转（64帧超流畅版）",
+        name: "13. 傲娇抱胸侧转（36帧全手绘转身版）",
         sheet: "../成品/13tsundere_sheet（傲娇抱胸_图集）.webp",
         anim: "../成品/13tsundere（傲娇抱胸_动画）.webp",
-        cols: 8,
-        rows: 8,
-        frames: 64,
+        cols: 6,
+        rows: 6,
+        frames: 36,
         cellSize: 384,
         quote: "哼！才、才不是为了你呢！💢",
-        durations: Array.from({ length: 64 }, (_, i) => {
-          const fast = (i >= 4 && i < 18) || (i >= 48 && i < 56);
-          const hold = [0,1,21,22,25,26,41,42,45,46,62,63].includes(i);
-          return fast ? 85 : (hold ? 165 : 115);
+        durations: Array.from({ length: 36 }, (_, i) => {
+          const fast = [1,2,3,4,6,7,8,9,10,22,23,24,25,29,30,31].includes(i);
+          const hold = [0,5,11,13,15,19,20,21,27,35].includes(i);
+          return fast ? 145 : (hold ? 270 : 195);
         })
+      },
+      {
+        id: "14drag_float",
+        name: "14. 鼠标拎起悬空晃动（48帧钟摆循环）",
+        sheet: "../成品/14drag_float_sheet（拎起晃动_图集）.webp",
+        anim: "../成品/14drag_float（拎起晃动_动画）.webp",
+        cols: 8,
+        rows: 6,
+        frames: 48,
+        cellSize: 384,
+        quote: "放、放我下来啦～(・ω・)",
+        durations: Array.from({ length: 48 }, (_, i) =>
+          Math.round(125 + 45 * Math.abs(Math.sin(2 * Math.PI * i / 24)))
+        )
       }
     ];
 
