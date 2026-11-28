@@ -407,22 +407,20 @@
     const ACTIONS = [
       {
         id: "01idle",
-        name: "01. 待机呼吸·Live2D级微动（96帧 10秒循环）",
+        name: "01. 待机呼吸·全动大尾巴下沉闪烁版（80帧 9.2秒循环）",
         sheet: "../成品/01idle_sheet（待机_图集）.webp",
         anim: "../成品/01idle（待机_动画).webp",
         cols: 8,
-        rows: 12,
-        frames: 96,
+        rows: 10,
+        frames: 80,
         cellSize: 384,
-        quote: "……（轻轻呼吸晃尾巴中）✨",
+        quote: "……（摇尾巴伸懒腰看星星中）✨",
         durations: (() => {
-          const d = Array.from({ length: 96 }, (_, i) => {
-            if ((i >= 12 && i <= 17) || (i >= 48 && i <= 53) || (i >= 80 && i <= 85)) return 92;
-            if ((i >= 28 && i <= 31) || (i >= 57 && i <= 60)) return 112;
-            return 104;
-          });
-          let diff = 10000 - d.reduce((a, b) => a + b, 0);
-          const idxs = d.map((v, i) => (v === 104 ? i : -1)).filter(i => i >= 0);
+          const holds = new Set([0, 17, 18, 19, 23, 24, 25, 30, 31, 32, 47, 48, 49, 58, 59, 60, 66, 67, 68]);
+          const fast = new Set([9, 10, 11, 12, 13, 14, 15, 16, 33, 34, 35, 36, 37, 38, 50, 51, 52, 53]);
+          const d = Array.from({ length: 80 }, (_, i) => (holds.has(i) ? 135 : (fast.has(i) ? 95 : 112)));
+          const diff = 9200 - d.reduce((a, b) => a + b, 0);
+          const idxs = d.map((v, i) => (v === 112 ? i : -1)).filter(i => i >= 0);
           const sign = diff > 0 ? 1 : -1;
           for (let k = 0; k < Math.abs(diff); k++) d[idxs[k % idxs.length]] += sign;
           return d;

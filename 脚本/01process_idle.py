@@ -7,37 +7,29 @@ from typing import List, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import (
-    binary_dilation,
-    binary_erosion,
-    distance_transform_edt,
-    gaussian_filter,
-    label,
-    map_coordinates,
-)
+from scipy.ndimage import distance_transform_edt, label, map_coordinates
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from build_webp import find_cell_boxes
-from expand_48 import get_main_component_mask
+from expand_48 import get_main_component_mask, pyramidal_optical_flow
 
-_spec_swp = importlib.util.spec_from_file_location("swp", "gemini/脚本/02process_sweeping.py")
-_swp = importlib.util.module_from_spec(_spec_swp)
-_spec_swp.loader.exec_module(_swp)
-clean_black_bg_rich_particles = _swp.clean_black_bg_rich_particles
-remove_nebula_blobs_aligned = _swp.remove_nebula_blobs_aligned
+_spec17 = importlib.util.spec_from_file_location("w17", "gemini/脚本/17build_wave_hello.py")
+_w17 = importlib.util.module_from_spec(_spec17)
+_spec17.loader.exec_module(_w17)
+find_white_grid_boxes = _w17.find_white_grid_boxes
+clean_white_bg = _w17.clean_white_bg
 
-_spec22 = importlib.util.spec_from_file_location("e22", "gemini/脚本/22process_eat_cookie.py")
-_e22 = importlib.util.module_from_spec(_spec22)
-_spec22.loader.exec_module(_e22)
-interpolate_flow_multi = _e22.interpolate_flow_multi
+_spec18 = importlib.util.spec_from_file_location("n18", "gemini/脚本/18process_note_taking.py")
+_n18 = importlib.util.module_from_spec(_spec18)
+_spec18.loader.exec_module(_n18)
+measure_head_metrics = _n18.measure_head_metrics
 
 CANVAS = 384
-SS = 2  # 2x 超采样画布 (768x768)，彻底消除网格变形后的边框发糊与三次样条振铃
+SS = 2  # 2x 超采样画布 (768x768)
 HR = CANVAS * SS
 GROUND_Y = 366
 HR_GROUND_Y = GROUND_Y * SS
-HR_TARGET_H = 304 * SS
-TOTAL_FRAMES = 96
+TARGET_H_0 = 308
+TOTAL_FRAMES = 80
 
 
 def smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
@@ -45,279 +37,323 @@ def smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
     return t * t * (3.0 - 2.0 * t)
 
 
-def bell_window(t: float, t0: float, t1: float, ramp: float = 0.05) -> float:
-    """Smooth raised-cosine window in [0, 1] active on [t0, t1]."""
-    if t <= t0 or t >= t1:
-        return 0.0
-    if t < t0 + ramp:
-        u = (t - t0) / ramp
-        return 0.5 - 0.5 * math.cos(math.pi * u)
-    if t > t1 - ramp:
-        u = (t1 - t) / ramp
-        return 0.5 - 0.5 * math.cos(math.pi * u)
-    return 1.0
-
-
-def clean_black_holes_and_defringe_hr(img_hr: Image.Image) -> Image.Image:
+def clean_white_crisp(img_rgba: Image.Image) -> Image.Image:
     """
-    在 768x768 超采样层彻底消除黑底 JPG 抠图带来的所有黑边、发缝黑块与毛边，
-    使外轮廓清透度完全对标原生透明 PNG（零黑边、柔和淡紫描边）：
-    1. 清除发缝/衣缝所有内部黑洞与洞内孤立噪点
-    2. 物理削薄最外 1.1px 黑底混合暗边（768 层收缩约 2.2px），保留丝滑抗锯齿
-    3. 对发丝/猫耳/猫尾外轮廓及发缝残暗像素执行 EDT 内侧净色替换 + 柔紫线稿提亮（避开眼瞳与黑衣裙）
+    纯白底高精抠图：
+    1. 四边泛洪去白底
+    2. 精准清理外侧大发缝与双腿下方纯白孔洞（严密保护白色袖口与百褶裙蕾丝）
+    3. 基于白底反预乘还原边界 RGB 并压制亮灰白边，双底色 100% 锐利零毛边
     """
-    arr = np.array(img_hr, dtype=np.float32)
-    r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
-    mx = np.maximum(np.maximum(r, g), b)
+    arr = np.array(img_rgba.convert("RGBA"), dtype=np.float32)
+    h, w, _ = arr.shape
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
     mn = np.minimum(np.minimum(r, g), b)
+    mx = np.maximum(np.maximum(r, g), b)
     chroma = mx - mn
-    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
-    uy, ux = yy / float(SS), xx / float(SS)
 
-    # --- 1. 清除内部封闭黑洞（两侧波浪发缝隙里的纯黑/暗灰三角区） ---
-    # 仅在头发/头侧/手外侧区域放宽黑洞判定，避免误伤深色衣裙与靴子
-    in_outfit_core = (uy >= 198.0) & (uy <= 368.0) & (np.abs(ux - 192.0) <= 56.0)
-    dark_bg_like = (a > 0) & (~in_outfit_core) & (mx < 62.0) & (chroma < 26.0)
-    labeled, n_comp = label(dark_bg_like)
-    hole_mask = np.zeros_like(dark_bg_like)
-    if n_comp > 0:
-        counts = np.bincount(labeled.ravel())
-        for cid in range(1, n_comp + 1):
-            if counts[cid] >= 12:
-                hole_mask |= (labeled == cid)
-    if hole_mask.any():
-        hole_dilated = binary_dilation(hole_mask, iterations=4)
-        solid_after_hole = (a > 20) & (~hole_mask)
-        l_sol, n_sol = label(solid_after_hole)
-        if n_sol > 1:
-            sc = np.bincount(l_sol.ravel())
-            main_id = int(np.argmax(sc[1:]) + 1)
-            tiny_islands = (l_sol > 0) & (l_sol != main_id) & (sc[l_sol] < 45) & hole_dilated
-            hole_mask |= tiny_islands
-        a = np.where(hole_mask, 0.0, a)
+    base = clean_white_bg(img_rgba, bg_thresh=236)
+    barr = np.array(base, dtype=np.float32)
+    alpha = barr[:, :, 3]
 
-    # --- 2. 外轮廓物理削去黑底暗皮 + 丝滑抗锯齿 ---
-    # 先对原 Alpha 做轻微内缩（削去黑底 JPG 混入的最外圈 1px 死黑边），再做平滑抗锯齿
-    a_smooth = gaussian_filter(a, sigma=1.4)
-    a_clean = np.clip((a_smooth - 152.0) / (244.0 - 152.0), 0.0, 1.0) * 255.0
+    is_pure_w = (alpha > 0) & (mn >= 249.0) & (chroma <= 6.0)
+    lbl, n = label(is_pure_w)
+    if n > 0:
+        fg_ys, fg_xs = np.nonzero(alpha > 40)
+        cx = float(np.median(fg_xs))
+        y_top, y_bot = int(fg_ys.min()), int(fg_ys.max())
+        body_h = y_bot - y_top
+        counts = np.bincount(lbl.ravel())
+        for cid in range(1, n + 1):
+            if counts[cid] < 10:
+                continue
+            ys_c, xs_c = np.nonzero(lbl == cid)
+            ym, xm = float(ys_c.mean()), float(xs_c.mean())
+            in_outer_hair_gap = (abs(xm - cx) > 0.27 * w) and (ym > y_top + 0.30 * body_h)
+            in_leg_gap = ym > y_top + 0.74 * body_h
+            if in_outer_hair_gap or in_leg_gap:
+                alpha[lbl == cid] = 0.0
 
-    # --- 3. 边缘色彩去黑污 + 清透淡紫描边润色（对标原生透底 PNG） ---
-    dist_from_bg = distance_transform_edt(a_clean > 12.0)
-    # 内侧干净彩色像素作为参考源（彻底排除死黑/暗灰边缘像素）
-    interior_clean = (a_clean > 248.0) & ((mx >= 105.0) | (in_outfit_core & (mx >= 65.0)))
-    edge_band = (a_clean > 0.0) & (dist_from_bg <= 8.0)
+    dist = distance_transform_edt(alpha > 8.0)
+    edge = (alpha > 0.0) & (dist <= 2.2)
+    fg_solid = (alpha > 240.0) & (dist > 2.2)
+    if fg_solid.any() and edge.any():
+        _, idxs = distance_transform_edt(~fg_solid, return_indices=True)
+        nr = barr[:, :, 0][idxs[0], idxs[1]]
+        ng = barr[:, :, 1][idxs[0], idxs[1]]
+        nb = barr[:, :, 2][idxs[0], idxs[1]]
 
-    if interior_clean.any() and edge_band.any():
-        _, indices = distance_transform_edt(~interior_clean, return_indices=True)
-        nr = r[indices[0], indices[1]]
-        ng = g[indices[0], indices[1]]
-        nb = b[indices[0], indices[1]]
+        denom = np.maximum(255.0 - np.minimum(np.minimum(nr, ng), nb), 35.0)
+        num = np.maximum(255.0 - mn, 0.0)
+        a_est = np.clip(num / denom, 0.0, 1.0)
+        is_bright_fringe = edge & (mn > 175.0) & (chroma < 48.0)
+        alpha = np.where(is_bright_fringe, np.minimum(alpha, a_est * 255.0), alpha)
 
-        # 外缘 4px 内（768 层即 8px）任何暗于内侧的边缘像素大幅替换为内侧纯净色
-        edge_prox = np.clip((8.0 - dist_from_bg) / 6.5, 0.0, 1.0)
-        is_dark = np.clip((125.0 - mx) / 75.0, 0.0, 1.0)
-        is_semi = np.clip((250.0 - a_clean) / 140.0, 0.0, 1.0)
+        decontam_w = np.where(edge & (mn > 160.0), np.clip((mn - 160.0) / 95.0, 0.0, 0.92), 0.0)
+        barr[:, :, 0] = barr[:, :, 0] * (1.0 - decontam_w) + nr * decontam_w
+        barr[:, :, 1] = barr[:, :, 1] * (1.0 - decontam_w) + ng * decontam_w
+        barr[:, :, 2] = barr[:, :, 2] * (1.0 - decontam_w) + nb * decontam_w
 
-        # 衣裙/靴子核心区只做轻度去黑边，头/发/猫耳/猫尾彻底去黑边
-        strength = np.where(in_outfit_core, 0.45, 1.0)
-        blend_w = np.where(edge_band, np.maximum(is_dark * edge_prox * strength, is_semi * 0.92), 0.0)
-        blend_w = np.clip(blend_w, 0.0, 1.0)
-
-        r = r * (1.0 - blend_w) + nr * blend_w
-        g = g * (1.0 - blend_w) + ng * blend_w
-        b = b * (1.0 - blend_w) + nb * blend_w
-
-        # 非深色衣裙区（头/发/猫耳/猫尾）最外 6px 仍偏暗的描边柔和提亮至清透淡紫 (112, 92, 146)
-        # 避开眼睛与眉毛内部区 (uy ∈ [134..186], |ux-192| < 46)
-        in_face_features = (uy >= 134.0) & (uy <= 186.0) & (np.abs(ux - 192.0) <= 46.0)
-        soft_outline = (
-            (a_clean > 0.0)
-            & (~in_outfit_core)
-            & (~in_face_features)
-            & (dist_from_bg <= 6.5)
-            & (np.maximum(np.maximum(r, g), b) < 115.0)
-        )
-        if soft_outline.any():
-            # 按原亮度比例柔和抬升，保留线稿层次感而非死板单色
-            lift = np.clip((115.0 - np.maximum(np.maximum(r, g), b)) / 115.0, 0.0, 1.0) * 0.85
-            r = np.where(soft_outline, r * (1.0 - lift) + 114.0 * lift, r)
-            g = np.where(soft_outline, g * (1.0 - lift) + 94.0 * lift, g)
-            b = np.where(soft_outline, b * (1.0 - lift) + 148.0 * lift, b)
-
-    out = np.zeros((HR, HR, 4), dtype=np.uint8)
-    out[:, :, 0] = np.clip(r, 0, 255).astype(np.uint8)
-    out[:, :, 1] = np.clip(g, 0, 255).astype(np.uint8)
-    out[:, :, 2] = np.clip(b, 0, 255).astype(np.uint8)
-    out[:, :, 3] = np.clip(a_clean, 0, 255).astype(np.uint8)
-    return Image.fromarray(out, "RGBA")
+    barr[:, :, 3] = np.clip(alpha, 0.0, 255.0)
+    return Image.fromarray(barr.astype(np.uint8), "RGBA")
 
 
-def align_full_body_hr(img: Image.Image) -> Image.Image:
-    """直接将高清原图单格对齐到 2x 超采样画布 (768x768)，并执行黑洞清理与边缘去黑污平滑。"""
-    arr = np.array(img, dtype=np.uint8)
-    mask = get_main_component_mask(arr[:, :, 3])
-    ys, xs = np.nonzero(mask)
-    y0, y1 = int(ys.min()), int(ys.max())
-    x0, x1 = int(xs.min()), int(xs.max())
-    h = max(1, y1 - y0 + 1)
-
-    # 仅保留最大连通主体，清理外围星光
-    clean = arr.copy()
-    clean[~mask] = 0
-    crop = Image.fromarray(clean[y0 : y1 + 1, x0 : x1 + 1], "RGBA")
-
-    scale = HR_TARGET_H / float(h)
-    nw = max(1, int(round(crop.width * scale)))
-    nh = max(1, int(round(crop.height * scale)))
-    resized = crop.resize((nw, nh), Image.LANCZOS)
-
-    # 用重心 x 对齐画布中心
-    r_arr = np.array(resized, dtype=np.uint8)
-    r_mask = r_arr[:, :, 3] > 60
-    r_xs = np.nonzero(r_mask)[1]
-    cx = float(r_xs.mean()) if len(r_xs) > 0 else nw / 2.0
-
-    paste_x = int(round(HR / 2.0 - cx))
-    paste_y = HR_GROUND_Y - nh
-
-    canvas = Image.new("RGBA", (HR, HR), (0, 0, 0, 0))
-    canvas.paste(resized, (paste_x, paste_y))
-    return clean_black_holes_and_defringe_hr(canvas)
+def align_by_head_hr(c: Image.Image, ref_hw_hr: float) -> Image.Image:
+    """严格 1:1 头宽比例对齐至 768x768 超采样画布，双脚锚定 HR_GROUND_Y。"""
+    hw_i, _, _, _ = measure_head_metrics(c, body_ratio=1.0)
+    sc = ref_hw_hr / max(1.0, hw_i)
+    nw, nh = max(1, int(round(c.width * sc))), max(1, int(round(c.height * sc)))
+    rz = c.resize((nw, nh), Image.Resampling.LANCZOS)
+    _, hcx, _, my1 = measure_head_metrics(rz, body_ratio=1.0)
+    px = int(round(HR * 0.5 - hcx))
+    py = int(round(HR_GROUND_Y - my1))
+    cv = Image.new("RGBA", (HR, HR), (0, 0, 0, 0))
+    cv.paste(rz, (px, py), rz)
+    return cv
 
 
-def build_wink_frame_hr(base_open: Image.Image, base_blink: Image.Image) -> Image.Image:
-    """在 768x768 超采样画布上无缝合成零色差、零残留的俏皮单眼 wink 帧（完整覆盖右眼及睫毛）。"""
-    a = np.array(base_open, dtype=np.float32)
-    b = np.array(base_blink, dtype=np.float32)
+def warp_rgba_hr(img_arr: np.ndarray, dx: np.ndarray, dy: np.ndarray) -> np.ndarray:
+    """在 768x768 超采样画布执行 Premultiplied Alpha 双线性形变。"""
+    h, w, _ = img_arr.shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    coords = np.array([yy + dy, xx + dx])
 
-    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
-    mask_x = smoothstep(184.0 * SS, 194.0 * SS, xx) * (1.0 - smoothstep(236.0 * SS, 246.0 * SS, xx))
-    mask_y = smoothstep(130.0 * SS, 140.0 * SS, yy) * (1.0 - smoothstep(174.0 * SS, 184.0 * SS, yy))
-    w = (mask_x * mask_y)[:, :, None]
+    alpha = img_arr[:, :, 3].astype(np.float32) / 255.0
+    premul = img_arr[:, :, :3].astype(np.float32) * alpha[:, :, None]
 
-    out = a * (1.0 - w) + b * w
-    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGBA")
-
-
-def blend_face_only_hr(base_a: Image.Image, base_b: Image.Image, t: float) -> Image.Image:
-    """
-    仅对五官面部区域做高清平滑过渡（身体与外轮廓 100% 保持 base_a 刀锋锐利原画），
-    彻底杜绝光流插值把人物外框拉糊！
-    """
-    if t <= 0.001:
-        return base_a
-    if t >= 0.999:
-        return base_b
-    a = np.array(base_a, dtype=np.float32)
-    b = np.array(base_b, dtype=np.float32)
-
-    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
-    # 仅覆盖双眼与嘴巴所在面部中心区域
-    mask_x = smoothstep(145.0 * SS, 158.0 * SS, xx) * (1.0 - smoothstep(228.0 * SS, 241.0 * SS, xx))
-    mask_y = smoothstep(134.0 * SS, 146.0 * SS, yy) * (1.0 - smoothstep(186.0 * SS, 198.0 * SS, yy))
-    w = (mask_x * mask_y * t)[:, :, None]
-
-    out = a * (1.0 - w) + b * w
-    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGBA")
-
-
-def warp_live2d_idle_hr(img_hr: Image.Image, phase: float) -> Image.Image:
-    """
-    在 768x768 (2x 超采样) 上执行零振铃双线性 (order=1) 网格变形，
-    再通过 LANCZOS 一次性高质量降采样至 384x384：
-    - 彻底消除三次样条振铃导致的边框发灰发糊
-    - 保留刀锋般锐利的深紫描边 + 天然 1px 柔和抗锯齿
-    """
-    arr = np.array(img_hr, dtype=np.float32)
-    alpha = arr[:, :, 3] / 255.0
-    premul_rgb = arr[:, :, :3] * alpha[:, :, None]
-
-    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
-    # 归一化到 384 坐标系方便参数一致
-    ux = xx / float(SS)
-    uy = yy / float(SS)
-
-    # 1. 呼吸曲线：10 秒内 3 个柔和完整呼吸周期
-    breath = 0.5 - 0.5 * math.cos(2.0 * math.pi * 3.0 * phase)
-    breath_signed = math.sin(2.0 * math.pi * 3.0 * phase)
-
-    # 2. 头部歪头与重心轻晃曲线
-    left_tilt = bell_window(phase, 0.16, 0.45, ramp=0.09)
-    right_tilt = bell_window(phase, 0.58, 0.87, ramp=0.09)
-    head_angle_deg = -4.2 * left_tilt + 3.8 * right_tilt + 0.6 * math.sin(2.0 * math.pi * phase)
-    head_angle = math.radians(head_angle_deg)
-    sway_x = -2.2 * left_tilt + 2.0 * right_tilt + 0.6 * math.sin(2.0 * math.pi * phase)
-
-    # 3. 猫耳轻抖微动
-    ear_twitch = (
-        bell_window(phase, 0.23, 0.30, ramp=0.025)
-        + bell_window(phase, 0.68, 0.75, ramp=0.025)
-    )
-    ear_w = (1.0 - smoothstep(106.0, 126.0, uy)) * smoothstep(18.0, 40.0, np.abs(ux - 192.0))
-    ear_dy = 2.6 * ear_twitch * ear_w
-    ear_dx = -np.sign(ux - 192.0) * 1.4 * ear_twitch * ear_w
-
-    # 部位平滑权重
-    ground_free = 1.0 - smoothstep(295.0, 338.0, uy)
-    head_w = 1.0 - smoothstep(184.0, 226.0, uy)
-    torso_w = smoothstep(185.0, 215.0, uy) * (1.0 - smoothstep(295.0, 332.0, uy))
-    hair_side = smoothstep(32.0, 68.0, np.abs(ux - 192.0)) * smoothstep(160.0, 210.0, uy) * (1.0 - smoothstep(295.0, 330.0, uy))
-    tail_x = smoothstep(222.0, 250.0, ux)
-    tail_y = smoothstep(242.0, 265.0, uy) * (1.0 - smoothstep(336.0, 355.0, uy))
-    tail_w = tail_x * tail_y
-
-    # 头部刚性旋转
-    pivot_x, pivot_y = 192.0, 196.0
-    dx_p = ux - pivot_x
-    dy_p = uy - pivot_y
-    cos_a = math.cos(-head_angle)
-    sin_a = math.sin(-head_angle)
-    rot_dx = (dx_p * cos_a - dy_p * sin_a) - dx_p
-    rot_dy = (dx_p * sin_a + dy_p * cos_a) - dy_p
-
-    breath_dy = 2.8 * breath * ground_free
-    breath_dx = -(ux - 192.0) * (0.008 * breath) * torso_w
-    sway_dx = -sway_x * ground_free
-
-    hair_wave = 2.0 * math.sin(2.0 * math.pi * 2.0 * phase - 0.9) + 1.0 * breath_signed
-    hair_dx = -hair_wave * hair_side * (1.0 - tail_w)
-    hair_dy = -0.9 * math.cos(2.0 * math.pi * 2.0 * phase - 0.6) * hair_side * (1.0 - tail_w)
-
-    tail_dist = np.clip((ux - 222.0) / 72.0, 0.0, 1.4)
-    tail_phase = 2.0 * math.pi * 2.0 * phase - tail_dist * 1.1
-    tail_dy = (6.2 * np.sin(tail_phase) + 1.8 * math.sin(2.0 * math.pi * 4.0 * phase)) * tail_w * tail_dist
-    tail_dx = (2.2 * np.cos(tail_phase)) * tail_w * tail_dist
-
-    src_x = (ux + rot_dx * head_w + breath_dx + sway_dx + hair_dx + tail_dx + ear_dx) * float(SS)
-    src_y = (uy + rot_dy * head_w + breath_dy + hair_dy + tail_dy + ear_dy) * float(SS)
-
-    coords = np.array([src_y, src_x])
-    # 使用 order=1 双线性插值避免任何三次样条振铃，再靠 2x 超采样 LANCZOS 降采样获得极致清晰锐度
-    out_alpha = np.clip(map_coordinates(alpha, coords, order=1, mode="constant", cval=0.0), 0.0, 1.0)
-    out_rgb = np.zeros((HR, HR, 3), dtype=np.float32)
+    wa = np.clip(map_coordinates(alpha, coords, order=1, mode="constant", cval=0.0), 0.0, 1.0)
+    out = np.zeros((h, w, 4), dtype=np.float32)
     for c in range(3):
-        ch = map_coordinates(premul_rgb[:, :, c], coords, order=1, mode="constant", cval=0.0)
-        out_rgb[:, :, c] = np.where(out_alpha > 1e-4, np.clip(ch / np.maximum(out_alpha, 1e-4), 0.0, 255.0), 0.0)
+        wc = map_coordinates(premul[:, :, c], coords, order=1, mode="constant", cval=0.0)
+        out[:, :, c] = np.where(wa > 1e-4, np.clip(wc / np.maximum(wa, 1e-4), 0.0, 255.0), 0.0)
+    out[:, :, 3] = np.clip(wa * 255.0, 0.0, 255.0)
+    return out
 
-    # 在 2x 超采样层收紧 Alpha 边带 [75..215]，降采样到 384 时自动形成极锐利无发糊的 1px 抗锯齿描边
-    out_a_u8 = out_alpha * 255.0
-    clean_a = np.where(
-        out_a_u8 < 75.0,
-        0.0,
-        np.where(out_a_u8 > 215.0, 255.0, (out_a_u8 - 75.0) / 140.0 * 255.0),
+
+def interpolate_flow_hr(img_a: Image.Image, img_b: Image.Image, ts: List[float]) -> List[Image.Image]:
+    """
+    在 768x768 (2x 超采样) 上执行 5 层金字塔高精双向光流插帧：
+    - 5 层金字塔覆盖长达 ~40px 的大幅身体下沉位移
+    - 不一致门控 strictly follows time-nearest frame (1.0 if t<=0.5 else 0.0)，
+      彻底杜绝“并集鬼影”（绝不会同时画出高低两对猫耳！）
+    """
+    a = np.array(img_a, dtype=np.uint8)
+    b = np.array(img_b, dtype=np.uint8)
+
+    def feature_map(arr: np.ndarray) -> np.ndarray:
+        al = arr[:, :, 3].astype(np.float32) / 255.0
+        lum = (0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]) / 255.0
+        return lum * al + 0.48 * al
+
+    fa, fb = feature_map(a), feature_map(b)
+    vx_ab, vy_ab = pyramidal_optical_flow(fa, fb, levels=5, win_sigma=5.0, iters=7)
+    vx_ba, vy_ba = pyramidal_optical_flow(fb, fa, levels=5, win_sigma=5.0, iters=7)
+
+    out_frames: List[Image.Image] = []
+    for t in ts:
+        wa = warp_rgba_hr(a, -t * vx_ab, -t * vy_ab)
+        wb = warp_rgba_hr(b, -(1.0 - t) * vx_ba, -(1.0 - t) * vy_ba)
+
+        rgb_diff = np.abs(wa[:, :, :3] - wb[:, :, :3]).mean(axis=2) / 255.0
+        alpha_diff = np.abs(wa[:, :, 3] - wb[:, :, 3]) / 255.0
+        disagree = rgb_diff * 0.8 + alpha_diff * 1.1
+        agree_w = np.clip(1.0 - disagree * 3.2, 0.0, 1.0)
+
+        # 关键防双耳鬼影规则：光流未重合的不一致区域严格选择时间最近的单帧，绝不做并集！
+        nearest_a = 1.0 if t <= 0.5 else 0.0
+        w_a = (1.0 - t) * agree_w + nearest_a * (1.0 - agree_w)
+        w_b = 1.0 - w_a
+
+        out = np.zeros_like(wa, dtype=np.float32)
+        out[:, :, :3] = wa[:, :, :3] * w_a[:, :, None] + wb[:, :, :3] * w_b[:, :, None]
+        out_a = wa[:, :, 3] * w_a + wb[:, :, 3] * w_b
+
+        out[:, :, 3] = np.where(
+            out_a < 55.0,
+            0.0,
+            np.where(out_a > 215.0, 255.0, (out_a - 55.0) / 160.0 * 255.0),
+        )
+        out_frames.append(Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGBA"))
+    return out_frames
+
+
+def get_body_top_lr(img_hr: Image.Image) -> float:
+    arr = np.array(img_hr, dtype=np.uint8)
+    mask = get_main_component_mask(arr[:, :, 3])
+    ys = np.nonzero(mask)[0]
+    return float(ys.min()) / float(SS)
+
+
+def make_gradual_crouch_pre_hr(base_stand_hr: Image.Image, target_crouch_hr: Image.Image) -> Image.Image:
+    """
+    生成一个“半下沉过渡桥接帧”：把站姿或吸气帧的躯干平稳向下屈膝压低 18px，
+    并轻度向外舒展双耳（纯刚性绕耳根旋转），从而把一次 37px 的巨幅跳跃拆成两步小跨度光流，
+    让耳朵和双臂 100% 丝滑跟踪下沉，绝不分裂！
+    """
+    top_y = get_body_top_lr(base_stand_hr)
+    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
+    ux, uy = xx / float(SS), yy / float(SS)
+
+    # 躯干与头部平稳向下沉 18px，双脚牢牢抓地
+    ground_free = 1.0 - smoothstep(295.0, 342.0, uy)
+    sink_dy = -18.0 * ground_free
+
+    # 绕左右耳根轻度外展旋转 (±12°)，衔接 K2 飞机耳
+    ear_l_w = (1.0 - smoothstep(top_y + 42.0, top_y + 74.0, uy)) * (1.0 - smoothstep(168.0, 186.0, ux))
+    ear_r_w = (1.0 - smoothstep(top_y + 42.0, top_y + 74.0, uy)) * smoothstep(200.0, 218.0, ux)
+
+    plx, ply = 166.0, top_y + 56.0
+    prx, pry = 220.0, top_y + 56.0
+    al = math.radians(-14.0)
+    ar = math.radians(14.0)
+
+    dlx, dly = ux - plx, uy - ply
+    rot_ldx = (dlx * math.cos(-al) - dly * math.sin(-al) - dlx) * ear_l_w
+    rot_ldy = (dlx * math.sin(-al) + dly * math.cos(-al) - dly) * ear_l_w
+
+    drx, dry = ux - prx, uy - pry
+    rot_rdx = (drx * math.cos(-ar) - dry * math.sin(-ar) - drx) * ear_r_w
+    rot_rdy = (drx * math.sin(-ar) + dry * math.cos(-ar) - dry) * ear_r_w
+
+    warped = warp_rgba_hr(
+        np.array(base_stand_hr, dtype=np.uint8),
+        (rot_ldx + rot_rdx) * float(SS),
+        (sink_dy + rot_ldy + rot_rdy) * float(SS),
+    )
+    return Image.fromarray(np.clip(warped, 0, 255).astype(np.uint8), "RGBA")
+
+
+def make_wink_pose_hr(base_open_hr: Image.Image, base_closed_hr: Image.Image) -> Image.Image:
+    """
+    合出零残影左金眼+右弯睫毛 Wink，同时施加以颈部为轴的左歪头 (-9.0°) + 右耳纯旋转轻压 (+8°)。
+    """
+    top_open = get_body_top_lr(base_open_hr)
+    top_cls = get_body_top_lr(base_closed_hr)
+    dy_align = (top_cls - top_open) * float(SS)
+
+    a = np.array(base_open_hr, dtype=np.float32)
+    b_arr = warp_rgba_hr(
+        np.array(base_closed_hr, dtype=np.uint8),
+        np.zeros((HR, HR), dtype=np.float32),
+        np.full((HR, HR), dy_align, dtype=np.float32),
     )
 
-    out_hr = np.zeros((HR, HR, 4), dtype=np.uint8)
-    out_hr[:, :, :3] = np.clip(out_rgb, 0, 255).astype(np.uint8)
-    out_hr[:, :, 3] = np.clip(clean_a, 0, 255).astype(np.uint8)
+    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
+    ux, uy = xx / float(SS), yy / float(SS)
 
-    # 使用 Premultiplied 方式 LANCZOS 降采样到 384x384，保证半透明边缘色彩 100% 纯净不发灰
-    hr_img = Image.fromarray(out_hr, "RGBA")
-    lr_img = hr_img.resize((CANVAS, CANVAS), Image.LANCZOS)
-    return lr_img
+    eye_cy = top_open + 96.0
+    mx = smoothstep(184.0, 193.0, ux) * (1.0 - smoothstep(234.0, 243.0, ux))
+    my = smoothstep(eye_cy - 22.0, eye_cy - 14.0, uy) * (1.0 - smoothstep(eye_cy + 15.0, eye_cy + 23.0, uy))
+    w = (mx * my)[:, :, None]
+    wink_raw = np.clip(a * (1.0 - w) + b_arr * w, 0, 255).astype(np.uint8)
+
+    pivot_x, pivot_y = 192.0, top_open + 132.0
+    head_w = 1.0 - smoothstep(pivot_y - 12.0, pivot_y + 30.0, uy)
+    ang = math.radians(-9.0)
+    dx_p, dy_p = ux - pivot_x, uy - pivot_y
+    rot_dx = (dx_p * math.cos(-ang) - dy_p * math.sin(-ang) - dx_p) * head_w
+    rot_dy = (dx_p * math.sin(-ang) + dy_p * math.cos(-ang) - dy_p) * head_w
+
+    # 右猫耳绕耳根保形状纯旋转微折 (+8°)
+    prx, pry = 220.0, top_open + 54.0
+    ear_r_w = (1.0 - smoothstep(top_open + 42.0, top_open + 66.0, uy)) * smoothstep(200.0, 218.0, ux)
+    ar = math.radians(8.0)
+    drx, dry = ux - prx, uy - pry
+    ear_rdx = (drx * math.cos(-ar) - dry * math.sin(-ar) - drx) * ear_r_w
+    ear_rdy = (drx * math.sin(-ar) + dry * math.cos(-ar) - dry) * ear_r_w
+
+    warped = warp_rgba_hr(wink_raw, (rot_dx + ear_rdx) * float(SS), (rot_dy + ear_rdy) * float(SS))
+    return Image.fromarray(np.clip(warped, 0, 255).astype(np.uint8), "RGBA")
 
 
-def draw_four_point_star(
+def make_right_tilt_ear_pose_hr(base_open_hr: Image.Image) -> Image.Image:
+    """
+    向右歪头 (+8.5°) + 右耳纯刚性旋转压耳 (+16°，绝不压扁变形耳朵！) + 轻度身体弹性下沉 (14px)。
+    """
+    top_y = get_body_top_lr(base_open_hr)
+    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
+    ux, uy = xx / float(SS), yy / float(SS)
+
+    # 先绕颈部做保形右歪头旋转
+    pivot_x, pivot_y = 192.0, top_y + 136.0
+    head_w = 1.0 - smoothstep(pivot_y - 14.0, pivot_y + 30.0, uy)
+    ang = math.radians(8.5)
+    dx_p, dy_p = ux - pivot_x, uy - pivot_y
+    rot_dx = (dx_p * math.cos(-ang) - dy_p * math.sin(-ang) - dx_p) * head_w
+    rot_dy = (dx_p * math.sin(-ang) + dy_p * math.cos(-ang) - dy_p) * head_w
+
+    # 再绕右耳根纯旋转压耳（保持整个耳廓饱满完整，丝毫不缺角、不发糊）
+    prx, pry = 222.0, top_y + 52.0
+    ear_r_w = (1.0 - smoothstep(top_y + 38.0, top_y + 62.0, uy)) * smoothstep(200.0, 222.0, ux)
+    ar = math.radians(15.5)
+    drx, dry = ux - prx, uy - pry
+    ear_rdx = (drx * math.cos(-ar) - dry * math.sin(-ar) - drx) * ear_r_w
+    ear_rdy = (drx * math.sin(-ar) + dry * math.cos(-ar) - dry) * ear_r_w
+
+    # 身体轻度弹性下沉 14px
+    ground_free = 1.0 - smoothstep(298.0, 342.0, uy)
+    sink_dy = -14.0 * ground_free
+
+    warped = warp_rgba_hr(
+        np.array(base_open_hr, dtype=np.uint8),
+        (rot_dx + ear_rdx) * float(SS),
+        (rot_dy + ear_rdy + sink_dy) * float(SS),
+    )
+    return Image.fromarray(np.clip(warped, 0, 255).astype(np.uint8), "RGBA")
+
+
+def apply_continuous_live2d_motion_hr(img_hr: Image.Image, phase: float) -> Image.Image:
+    """
+    全程 80 帧连续施加大猫尾大弧度波浪摇摆 + 柔风长发微摆 + 耳尖微颤与轻量辅助呼吸，
+    再一次性 LANCZOS 降采样至 384x384 锁定锋利线条。
+    """
+    top_y = get_body_top_lr(img_hr)
+    tail_base_y = min(312.0, top_y + 228.0)
+
+    yy, xx = np.mgrid[0:HR, 0:HR].astype(np.float32)
+    ux, uy = xx / float(SS), yy / float(SS)
+
+    tail_x_w = smoothstep(224.0, 246.0, ux)
+    tail_y_w = smoothstep(tail_base_y - 34.0, tail_base_y - 12.0, uy) * (1.0 - smoothstep(tail_base_y + 42.0, tail_base_y + 56.0, uy))
+    tail_w = tail_x_w * tail_y_w
+
+    pivot_tx, pivot_ty = 224.0, tail_base_y + 8.0
+    tail_dist = np.clip((ux - 224.0) / 68.0, 0.0, 1.35)
+    t_wave = 2.0 * math.pi * 4.0 * phase - tail_dist * 0.75
+    tail_ang = math.radians(16.0 * math.sin(2.0 * math.pi * 4.0 * phase) + 4.0 * math.sin(2.0 * math.pi * 2.0 * phase))
+    tx_p, ty_p = ux - pivot_tx, uy - pivot_ty
+    t_rot_dx = (tx_p * math.cos(-tail_ang) - ty_p * math.sin(-tail_ang) - tx_p) * tail_w
+    t_rot_dy = (tx_p * math.sin(-tail_ang) + ty_p * math.cos(-tail_ang) - ty_p) * tail_w
+    tail_tip_dy = (7.5 * np.sin(t_wave)) * tail_w * tail_dist
+    tail_tip_dx = (3.5 * np.cos(t_wave)) * tail_w * tail_dist
+
+    hair_side = (
+        smoothstep(34.0, 72.0, np.abs(ux - 192.0))
+        * smoothstep(top_y + 92.0, top_y + 145.0, uy)
+        * (1.0 - smoothstep(292.0, 330.0, uy))
+        * (1.0 - tail_w)
+    )
+    hair_wave = 2.8 * math.sin(2.0 * math.pi * 3.0 * phase - 0.8)
+    hair_dx = -hair_wave * hair_side
+    hair_dy = -1.1 * math.cos(2.0 * math.pi * 3.0 * phase - 0.5) * hair_side
+
+    ear_micro = 1.6 * math.sin(2.0 * math.pi * 6.0 * phase)
+    ear_w = (1.0 - smoothstep(top_y + 38.0, top_y + 60.0, uy)) * smoothstep(20.0, 44.0, np.abs(ux - 192.0))
+    ear_dy = -ear_micro * ear_w * np.where(ux > 192.0, 1.0, 0.55)
+
+    ground_free = 1.0 - smoothstep(298.0, 338.0, uy)
+    micro_breath_dy = -1.6 * math.sin(2.0 * math.pi * 3.0 * phase) * ground_free
+
+    dx_total = (t_rot_dx + tail_tip_dx + hair_dx) * float(SS)
+    dy_total = (t_rot_dy + tail_tip_dy + hair_dy + ear_dy + micro_breath_dy) * float(SS)
+
+    warped_hr = warp_rgba_hr(np.array(img_hr, dtype=np.uint8), dx_total, dy_total)
+    wa = warped_hr[:, :, 3]
+    warped_hr[:, :, 3] = np.where(wa < 22.0, 0.0, np.where(wa > 232.0, 255.0, (wa - 22.0) / 210.0 * 255.0))
+    hr_img = Image.fromarray(np.clip(warped_hr, 0, 255).astype(np.uint8), "RGBA")
+    return hr_img.resize((CANVAS, CANVAS), Image.Resampling.LANCZOS)
+
+
+def draw_twinkle_star(
     layer: Image.Image,
     cx: float,
     cy: float,
@@ -325,29 +361,32 @@ def draw_four_point_star(
     fill_rgb: Tuple[int, int, int],
     outline_rgb: Tuple[int, int, int],
     opacity: float,
+    with_cross: bool = True,
 ) -> None:
-    """绘制华丽清晰的抗锯齿四芒星（带柔和外光晕 + 清晰深紫描边 + 亮白星核，白底黑底均醒目通透）。"""
-    if opacity <= 0.03 or r < 2.0:
+    """绘制一闪一闪的高清抗锯齿四芒星（带细腻深紫描边、柔和亮晕与白芯闪光十字）。"""
+    if opacity <= 0.04 or r < 1.8:
         return
     scale = 4
-    pad = int(math.ceil(r * 2.2)) + 10
+    pad = int(math.ceil(r * 2.4)) + 10
     sz = pad * 2 * scale
     tmp = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
     draw = ImageDraw.Draw(tmp)
     c = pad * scale
     R = r * scale
-    rin = R * 0.27
+    rin = R * 0.25
 
-    # 柔和同色微光底晕（极轻，白底不发脏、黑底更璀璨）
-    rg = R * 0.85
-    draw.ellipse(
-        (c - rg, c - rg, c + rg, c + rg),
-        fill=fill_rgb + (int(55 * opacity),),
-    )
+    rg = R * 0.78
+    draw.ellipse((c - rg, c - rg, c + rg, c + rg), fill=fill_rgb + (int(56 * opacity),))
 
-    # 外描边稍粗一层确保白底清晰锐利
-    R_out = R + 1.4 * scale
-    rin_out = R_out * 0.29
+    if with_cross and opacity > 0.50:
+        ray_len = R * (1.32 + 0.28 * (opacity - 0.50))
+        lw = max(2, int(round(1.2 * scale)))
+        ray_a = int(225 * ((opacity - 0.50) / 0.50))
+        draw.line([(c - ray_len, c), (c + ray_len, c)], fill=(255, 255, 255, ray_a), width=lw)
+        draw.line([(c, c - ray_len), (c, c + ray_len)], fill=(255, 255, 255, ray_a), width=lw)
+
+    R_out = R + 1.35 * scale
+    rin_out = R_out * 0.27
     pts_out = [
         (c, c - R_out),
         (c + rin_out, c - rin_out),
@@ -358,7 +397,7 @@ def draw_four_point_star(
         (c - R_out, c),
         (c - rin_out, c - rin_out),
     ]
-    draw.polygon(pts_out, fill=outline_rgb + (int(230 * opacity),))
+    draw.polygon(pts_out, fill=outline_rgb + (int(242 * opacity),))
 
     pts = [
         (c, c - R),
@@ -372,43 +411,39 @@ def draw_four_point_star(
     ]
     draw.polygon(pts, fill=fill_rgb + (int(255 * opacity),))
 
-    # 中心亮白星核
     rc = R * 0.34
-    draw.ellipse((c - rc, c - rc, c + rc, c + rc), fill=(255, 255, 255, int(245 * opacity)))
+    draw.ellipse((c - rc, c - rc, c + rc, c + rc), fill=(255, 255, 255, int(252 * opacity)))
 
-    star_img = tmp.resize((pad * 2, pad * 2), Image.LANCZOS)
+    star_img = tmp.resize((pad * 2, pad * 2), Image.Resampling.LANCZOS)
     ix, iy = int(round(cx - pad)), int(round(cy - pad))
     layer.alpha_composite(star_img, dest=(ix, iy))
 
 
-def overlay_idle_sparkles(frame: Image.Image, phase: float) -> Image.Image:
-    """
-    在角色左右两侧安全区叠加贯穿 10 秒循环的华丽金粉四芒星与星尘特效：
-    - 8 颗大中小错落星芒，按严格周期函数交错呼吸闪烁、轻柔上下悬浮
-    - 第 0 帧与第 95 帧数学 100% 连续闭环，始终有精致星光环绕陪伴
-    """
+def overlay_twinkling_stars(frame: Image.Image, phase: float) -> Image.Image:
+    """12 颗错落分布的星星严格按多频率周期一闪一闪闪烁与轻盈浮动。"""
     layer = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    # (base_x, base_y, max_r, fill_rgb, freq_cycles, phase_offset, float_amp)
-    specs = [
-        # 左侧主星组（暖金大星 + 粉紫中星 + 亮金小星）
-        (68.0, 148.0, 17.0, (255, 222, 110), 2.0, 0.00, 6.0),
-        (54.0, 212.0, 13.5, (255, 168, 226), 2.0, 0.35, 5.0),
-        (88.0, 102.0, 9.5, (255, 238, 160), 3.0, 0.60, 4.0),
-        (66.0, 268.0, 8.5, (210, 172, 255), 3.0, 0.15, 4.5),
-        # 右侧主星组（暖金大星 + 粉紫中星 + 冰紫小星）
-        (314.0, 138.0, 18.0, (255, 222, 110), 2.0, 0.50, 6.5),
-        (330.0, 204.0, 14.0, (255, 168, 226), 2.0, 0.85, 5.5),
-        (294.0, 92.0, 9.5, (255, 238, 160), 3.0, 0.25, 4.0),
-        (322.0, 264.0, 9.0, (206, 170, 255), 3.0, 0.70, 4.5),
+    stars = [
+        (58.0, 124.0, 15.0, (255, 222, 88), 4, 0.00, 5.0, True),
+        (44.0, 198.0, 12.0, (255, 156, 220), 5, 0.38, 4.5, True),
+        (86.0, 80.0, 9.5, (255, 236, 150), 6, 0.65, 3.5, False),
+        (56.0, 266.0, 10.5, (196, 158, 255), 4, 0.52, 4.0, True),
+        (36.0, 154.0, 7.0, (255, 242, 180), 7, 0.21, 3.0, False),
+        (82.0, 314.0, 8.0, (255, 168, 228), 5, 0.82, 3.5, False),
+        (324.0, 116.0, 15.5, (255, 222, 88), 4, 0.25, 5.5, True),
+        (340.0, 192.0, 12.5, (255, 156, 220), 5, 0.72, 4.5, True),
+        (296.0, 76.0, 9.8, (255, 236, 150), 6, 0.12, 3.5, False),
+        (334.0, 260.0, 10.0, (196, 158, 255), 4, 0.88, 4.0, True),
+        (350.0, 148.0, 7.2, (255, 242, 180), 7, 0.54, 3.0, False),
+        (336.0, 316.0, 8.0, (255, 220, 96), 5, 0.44, 3.5, False),
     ]
-    outline = (116, 82, 156)
-    for bx, by, mr, col, freq, poff, famp in specs:
-        # 严格周期性平滑呼吸闪烁（[0.08 .. 1.0] 交错明暗，永不生硬跳变）
-        wave = 0.5 + 0.5 * math.sin(2.0 * math.pi * (freq * phase + poff))
-        op = 0.12 + 0.88 * (wave ** 1.35)
-        r = mr * (0.48 + 0.52 * wave)
+    outline = (102, 68, 144)
+    for bx, by, mr, col, freq, poff, famp, cross in stars:
+        u = (freq * phase + poff) % 1.0
+        flash = math.pow(max(0.0, math.sin(math.pi * u)), 2.3)
+        op = 0.06 + 0.94 * flash
+        r = mr * (0.30 + 0.70 * flash)
         cy = by + famp * math.sin(2.0 * math.pi * (phase + poff))
-        draw_four_point_star(layer, bx, cy, r, col, outline, op)
+        draw_twinkle_star(layer, bx, cy, r, col, outline, op, with_cross=cross)
 
     out = frame.copy()
     out.alpha_composite(layer)
@@ -416,107 +451,80 @@ def overlay_idle_sparkles(frame: Image.Image, phase: float) -> Image.Image:
 
 
 def main() -> dict:
-    s1 = Image.open("gemini/素材/01idle/part1.jpg").convert("RGBA")
-    b1 = find_cell_boxes(s1, 4, 3)
+    sheet = Image.open("gemini/素材/01idle_v4/part1_white.jpg").convert("RGBA")
+    boxes = find_white_grid_boxes(sheet, cols=4, rows=2, thresh=242)
+    cells = [clean_white_crisp(sheet.crop(b)) for b in boxes]
 
-    p1_0 = clean_black_bg_rich_particles(s1.crop(b1[0]), bg_thresh=24, hole_thresh=18, glow_cutoff=22)
-    p1_8 = clean_black_bg_rich_particles(s1.crop(b1[8]), bg_thresh=24, hole_thresh=18, glow_cutoff=22)
-    p1_10 = clean_black_bg_rich_particles(s1.crop(b1[10]), bg_thresh=24, hole_thresh=18, glow_cutoff=22)
+    arr0 = np.array(cells[0], dtype=np.uint8)
+    m0 = get_main_component_mask(arr0[:, :, 3])
+    ys0 = np.nonzero(m0)[0]
+    h0 = int(ys0.max() - ys0.min() + 1)
+    hw0, _, _, _ = measure_head_metrics(cells[0], body_ratio=1.0)
+    ref_hw_hr = hw0 * ((TARGET_H_0 * float(SS)) / max(1, h0))
 
-    # 全部直接对齐到 2x 超采样画布 (768x768)，保留原画刀锋锐利外框
-    base_open = align_full_body_hr(p1_0)
-    base_blink = align_full_body_hr(p1_8)
-    base_wink = build_wink_frame_hr(base_open, base_blink)
-    base_yawn = align_full_body_hr(p1_10)
+    aligned_hr = [align_by_head_hr(c, ref_hw_hr) for c in cells]
 
-    # 面部局部高清平滑过渡（身体与外轮廓 100% 锁定 base_open 原始锐度，绝不拉糊外框）
-    open_to_blink = [blend_face_only_hr(base_open, base_blink, 0.35), blend_face_only_hr(base_open, base_blink, 0.70)]
-    open_to_wink = [blend_face_only_hr(base_open, base_wink, 0.35), blend_face_only_hr(base_open, base_wink, 0.70)]
-    open_to_yawn = [blend_face_only_hr(base_open, base_yawn, 0.35), blend_face_only_hr(base_open, base_yawn, 0.70)]
+    k0 = aligned_hr[0]  # 标准站姿 :3
+    k1 = aligned_hr[1]  # 吸气微抬+举拳虎牙笑
+    k2 = aligned_hr[2]  # 大幅度屈膝身体往下沉 + 双耳外折飞机耳
+    k3 = aligned_hr[3]  # 保持下沉 + 慵懒半眯眼 + 双手轻拢
+    k4 = aligned_hr[4]  # 下沉抱胸 + 左歪头 + 左单耳压折 + 鼓脸无辜盯
+    k5 = aligned_hr[5]  # 弹性回弹起身 + 开心虎牙笑
+    k6 = aligned_hr[6]  # 俏皮回正 :3
+    k7 = aligned_hr[7]  # 温柔闭眼呼吸休息
 
-    def pick_expression_base(idx: int) -> Image.Image:
-        # 第 1 次自然眨眼 (12..17)
-        if idx == 12:
-            return open_to_blink[0]
-        if idx == 13:
-            return open_to_blink[1]
-        if idx in (14, 15):
-            return base_blink
-        if idx == 16:
-            return open_to_blink[1]
-        if idx == 17:
-            return open_to_blink[0]
+    # 两项纯保形高清派生：半下沉桥接帧(彻底消除K1->K2耳朵跳跃双影)、左歪头Wink、右歪头右折耳
+    k_crouch_mid = make_gradual_crouch_pre_hr(k0, k2)
+    k_wink = make_wink_pose_hr(k6, k7)
+    k_rtilt = make_right_tilt_ear_pose_hr(k0)
 
-        # 左歪头短暂俏皮单眼 wink (26..33)
-        if idx == 26:
-            return open_to_wink[0]
-        if idx == 27:
-            return open_to_wink[1]
-        if 28 <= idx <= 31:
-            return base_wink
-        if idx == 32:
-            return open_to_wink[1]
-        if idx == 33:
-            return open_to_wink[0]
+    # 12 段高精过渡 -> 共计 80 帧闭环 (8x10)
+    segments = [
+        (k0, k1, 4),           # 0: 站姿 -> 吸气抬拳虎牙笑 (5)
+        (k1, k0, 3),           # 1: 吸气微收准备下沉 (4)
+        (k0, k_crouch_mid, 3), # 2: 屈膝开始下沉+外展耳朵 (4)
+        (k_crouch_mid, k2, 4), # 3: 沉到底部+飞机耳舒展 (5)
+        (k2, k3, 5),           # 4: 保持下沉 -> 慵懒半眯眼 (6)
+        (k3, k4, 6),           # 5: 下沉 -> 抱胸左歪头+左单耳折耳 (7)
+        (k4, k5, 6),           # 6: 蹲姿 -> Q弹起身回正虎牙笑 (7)
+        (k5, k6, 4),           # 7: 虎牙笑 -> 回正:3微笑 (5)
+        (k6, k_wink, 5),       # 8: 回正:3 -> 左歪头+右眼俏皮Wink+右耳微抖 (6)
+        (k_wink, k6, 4),       # 9: Wink -> 回正:3 (5)
+        (k6, k_rtilt, 6),      # 10: 回正 -> 右大歪头+右耳折耳+轻度二次下沉 (7)
+        (k_rtilt, k7, 6),      # 11: 右歪头 -> 温柔闭眼深呼吸休息 (7)
+        (k7, k0, 11),          # 12: 闭眼休息 -> 睁眼优雅回正闭环 (12 -> 总计 80 帧!)
+    ]
+    assert sum(1 + n for _, _, n in segments) == TOTAL_FRAMES
 
-        # 第 2 次自然眨眼 (48..53)
-        if idx == 48:
-            return open_to_blink[0]
-        if idx == 49:
-            return open_to_blink[1]
-        if idx in (50, 51):
-            return base_blink
-        if idx == 52:
-            return open_to_blink[1]
-        if idx == 53:
-            return open_to_blink[0]
+    frames_hr: List[Image.Image] = []
+    key_indices: List[int] = []
+    for fa, fb, n_mid in segments:
+        key_indices.append(len(frames_hr))
+        frames_hr.append(fa)
+        ts = [(m + 1) / float(n_mid + 1) for m in range(n_mid)]
+        frames_hr.extend(interpolate_flow_hr(fa, fb, ts))
 
-        # 可爱轻哈欠 (55..62)
-        if idx == 55:
-            return open_to_yawn[0]
-        if idx == 56:
-            return open_to_yawn[1]
-        if 57 <= idx <= 60:
-            return base_yawn
-        if idx == 61:
-            return open_to_yawn[1]
-        if idx == 62:
-            return open_to_yawn[0]
+    assert len(frames_hr) == TOTAL_FRAMES
 
-        # 第 3 次自然眨眼 (80..85)
-        if idx == 80:
-            return open_to_blink[0]
-        if idx == 81:
-            return open_to_blink[1]
-        if idx in (82, 83):
-            return base_blink
-        if idx == 84:
-            return open_to_blink[1]
-        if idx == 85:
-            return open_to_blink[0]
-
-        return base_open
-
-    frames_96: List[Image.Image] = []
-    for i in range(TOTAL_FRAMES):
+    frames_80: List[Image.Image] = []
+    for i, fr_hr in enumerate(frames_hr):
         phase = i / float(TOTAL_FRAMES)
-        expr_hr = pick_expression_base(i)
-        deformed_lr = warp_live2d_idle_hr(expr_hr, phase)
-        final_fr = overlay_idle_sparkles(deformed_lr, phase)
-        frames_96.append(final_fr)
+        moved_lr = apply_continuous_live2d_motion_hr(fr_hr, phase)
+        final_lr = overlay_twinkling_stars(moved_lr, phase)
+        frames_80.append(final_lr)
 
-    assert len(frames_96) == TOTAL_FRAMES
-
-    heights = []
-    for fr in frames_96:
+    heights: List[int] = []
+    top_ys: List[int] = []
+    for fr in frames_80:
         a = np.array(fr)[:, :, 3]
         mask = get_main_component_mask(a)
         ys = np.nonzero(mask)[0]
         heights.append(int(ys.max() - ys.min() + 1))
+        top_ys.append(int(ys.min()))
 
-    cols, rows = 8, 12
+    cols, rows = 8, 10
     atlas = Image.new("RGBA", (cols * CANVAS, rows * CANVAS), (0, 0, 0, 0))
-    for i, fr in enumerate(frames_96):
+    for i, fr in enumerate(frames_80):
         r, c = divmod(i, cols)
         atlas.paste(fr, (c * CANVAS, r * CANVAS))
 
@@ -529,28 +537,24 @@ def main() -> dict:
     anim_path = os.path.join(out_dir, "01idle（待机_动画).webp")
     atlas.save(sheet_path, format="WEBP", lossless=True, quality=100)
 
-    durations: List[int] = []
-    for i in range(TOTAL_FRAMES):
-        if (12 <= i <= 17) or (48 <= i <= 53) or (80 <= i <= 85):
-            durations.append(92)
-        elif (28 <= i <= 31) or (57 <= i <= 60):
-            durations.append(112)
-        else:
-            durations.append(104)
+    # 变速呼吸节奏 (严格 9200ms): 蹲沉停顿、左歪头、Wink、右歪头、闭眼各留足呼吸节奏
+    hold_set = {0, 17, 18, 19, 23, 24, 25, 30, 31, 32, 47, 48, 49, 58, 59, 60, 66, 67, 68}
+    fast_set = set(range(9, 17)) | set(range(33, 39)) | set(range(50, 54))
+    durations = [135 if i in hold_set else (95 if i in fast_set else 112) for i in range(TOTAL_FRAMES)]
 
-    diff = 10000 - sum(durations)
-    adjust_indices = [i for i in range(TOTAL_FRAMES) if durations[i] == 104]
-    step_sign = 1 if diff > 0 else -1
+    target_ms = 9200
+    diff = target_ms - sum(durations)
+    adj_idxs = [i for i in range(TOTAL_FRAMES) if durations[i] == 112]
+    sign = 1 if diff > 0 else -1
     for k in range(abs(diff)):
-        durations[adjust_indices[k % len(adjust_indices)]] += step_sign
+        durations[adj_idxs[k % len(adj_idxs)]] += sign
+    assert sum(durations) == target_ms
 
-    assert sum(durations) == 10000
-
-    frames_96[0].save(
+    frames_80[0].save(
         anim_path,
         format="WEBP",
         save_all=True,
-        append_images=frames_96[1:],
+        append_images=frames_80[1:],
         duration=durations,
         loop=0,
         lossless=True,
@@ -570,12 +574,14 @@ def main() -> dict:
 
     res = {
         "action": "01idle",
-        "frames": len(frames_96),
+        "frames": len(frames_80),
         "grid": f"{cols}x{rows}",
         "cell_size": CANVAS,
         "atlas_size": list(atlas.size),
         "height_min": min(heights),
         "height_max": max(heights),
+        "sink_range_px": max(top_ys) - min(top_ys),
+        "key_indices": key_indices,
         "total_ms": sum(durations),
         "total_seconds": round(sum(durations) / 1000.0, 2),
         "sheet_path": sheet_path,
