@@ -1,0 +1,25 @@
+import os
+import numpy as np
+from PIL import Image, ImageDraw
+G = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(G, "待审")
+D = os.path.join(OUT, "_diag0506")
+a = np.array(Image.open(os.path.join(OUT, "05thinking", "_norm", "norm_44.png")).convert("RGBA"), dtype=np.float32)
+b = np.array(Image.open(os.path.join(OUT, "05thinking", "_norm", "norm_45.png")).convert("RGBA"), dtype=np.float32)
+box = (120, 60, 280, 170)
+crop = lambda arr: Image.fromarray(arr.astype(np.uint8), "RGBA").crop(box)
+diff = np.abs(a - b).max(axis=2)
+mask = (diff > 45).astype(np.float32)
+m_img = Image.fromarray((mask[box[1]:box[3], box[0]:box[2]] * 255).astype(np.uint8), "L").convert("RGB")
+sheet = Image.new("RGB", (160 * 3 * 2 + 20, 110 * 2 + 30), (240, 240, 240))
+dr = ImageDraw.Draw(sheet)
+for k, arr in enumerate((a, b)):
+    c = Image.new("RGBA", (160, 110), (240, 240, 240, 255))
+    c.alpha_composite(crop(arr))
+    sheet.paste(c.convert("RGB").resize((320, 220), Image.LANCZOS), (k * 320, 20))
+dr.text((6, 4), "f44", fill=(160, 20, 20))
+dr.text((326, 4), "f45", fill=(160, 20, 20))
+sheet.paste(m_img.resize((320, 220), Image.NEAREST), (0, 20 + 220 + 10))
+dr.text((6, 230), "diff mask", fill=(160, 20, 20))
+sheet.save(os.path.join(D, "05_glasses_diff.png"))
+print("diff px", int(mask.sum()), "bbox", np.where(mask > 0)[0].min(), np.where(mask > 0)[0].max())
