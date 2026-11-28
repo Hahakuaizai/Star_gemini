@@ -407,18 +407,26 @@
     const ACTIONS = [
       {
         id: "01idle",
-        name: "01. 待机呼吸·星尘环绕（80帧插帧版）",
+        name: "01. 待机呼吸·Live2D级微动（96帧 10秒循环）",
         sheet: "../成品/01idle_sheet（待机_图集）.webp",
         anim: "../成品/01idle（待机_动画).webp",
         cols: 8,
-        rows: 10,
-        frames: 80,
+        rows: 12,
+        frames: 96,
         cellSize: 384,
-        quote: "……（轻轻呼吸中）✨",
-        durations: [75, 75, 75, 75, 75, 75, 75, 75, 150, 150, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75,
-          75, 75, 75, 75, 75, 75, 75, 75, 150, 75, 75, 75, 75, 150, 75, 75, 75, 75, 75, 75,
-          150, 150, 75, 75, 75, 75, 150, 150, 75, 75, 75, 75, 75, 75, 150, 75, 75, 75, 75, 75,
-          75, 150, 75, 75, 150, 150, 75, 75, 150, 150, 150, 150, 75, 75, 75, 75, 75, 75, 75, 75]
+        quote: "……（轻轻呼吸晃尾巴中）✨",
+        durations: (() => {
+          const d = Array.from({ length: 96 }, (_, i) => {
+            if ((i >= 12 && i <= 17) || (i >= 48 && i <= 53) || (i >= 80 && i <= 85)) return 92;
+            if ((i >= 28 && i <= 31) || (i >= 57 && i <= 60)) return 112;
+            return 104;
+          });
+          let diff = 10000 - d.reduce((a, b) => a + b, 0);
+          const idxs = d.map((v, i) => (v === 104 ? i : -1)).filter(i => i >= 0);
+          const sign = diff > 0 ? 1 : -1;
+          for (let k = 0; k < Math.abs(diff); k++) d[idxs[k % idxs.length]] += sign;
+          return d;
+        })()
       },
       {
         id: "02sweeping",
@@ -573,18 +581,19 @@
       },
       {
         id: "coding",
-        name: "专注写代码·戴摘眼镜版（72帧高帧率精修）",
+        name: "03. 专注写代码·戴摘眼镜版（64帧去重精修）",
         sheet: "../成品/03coding_sheet（写代码_图集）.webp",
         anim: "../成品/03coding（写代码_动画）.webp",
         cols: 8,
-        rows: 9,
-        frames: 72,
+        rows: 8,
+        frames: 64,
         cellSize: 384,
         quote: "让我专心写会儿代码……✨",
-        durations: Array.from({ length: 72 }, (_, i) => {
-          if (i === 0 || i === 71) return 180;
-          if ((i >= 38 && i <= 44) || (i >= 53 && i <= 56)) return 165;
-          if ((i >= 16 && i <= 37) || (i >= 45 && i <= 52)) return 95;
+        durations: Array.from({ length: 64 }, (_, i) => {
+          if (i === 0 || i === 63) return 180;
+          if (i === 32 || i === 33) return 420;
+          if (i === 45) return 260;
+          if ((i >= 14 && i <= 31) || (i >= 34 && i <= 44)) return 95;
           return 115;
         })
       },
