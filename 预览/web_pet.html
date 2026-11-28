@@ -573,18 +573,19 @@
       },
       {
         id: "coding",
-        name: "专注写代码·戴摘眼镜版（48帧循环）",
+        name: "专注写代码·戴摘眼镜版（72帧高帧率精修）",
         sheet: "../成品/03coding_sheet（写代码_图集）.webp",
         anim: "../成品/03coding（写代码_动画）.webp",
         cols: 8,
-        rows: 6,
-        frames: 48,
-        cellSize: 256,
+        rows: 9,
+        frames: 72,
+        cellSize: 384,
         quote: "让我专心写会儿代码……✨",
-        durations: Array.from({ length: 48 }, (_, i) => {
-          const fast = i >= 9 && i <= 22 || (i >= 36 && i <= 38);
-          const hold = [0,1,2,3,4,5,6,31,32,33,34,35,43,44,45,46].includes(i);
-          return fast ? 135 : (hold ? 270 : 180);
+        durations: Array.from({ length: 72 }, (_, i) => {
+          if (i === 0 || i === 71) return 180;
+          if ((i >= 38 && i <= 44) || (i >= 53 && i <= 56)) return 165;
+          if ((i >= 16 && i <= 37) || (i >= 45 && i <= 52)) return 95;
+          return 115;
         })
       },
       {
@@ -695,6 +696,85 @@
           const fast = [12, 13, 14, 16, 17, 18].includes(i);
           const hold = [0, 1, 5, 6, 19, 21, 24, 25, 26, 27, 40, 41, 46, 47].includes(i);
           return fast ? 145 : (hold ? 235 : 180);
+        })
+      },
+      {
+        id: "21drink_milktea",
+        name: "21. 喝星空珍珠奶茶（48帧流畅版）",
+        sheet: "../成品/21drink_milktea_sheet（喝星空珍珠奶茶_图集）.webp",
+        anim: "../成品/21drink_milktea（喝星空珍珠奶茶_动画）.webp",
+        cols: 8,
+        rows: 6,
+        frames: 48,
+        cellSize: 384,
+        quote: "咕嘟咕嘟～星空奶茶超好喝！🧋✨",
+        durations: Array.from({ length: 48 }, (_, i) => {
+          const fast = [10, 11, 12, 13, 14, 15].includes(i);
+          const hold = [0, 1, 20, 21, 24, 25, 26, 29, 30, 40, 41, 46, 47].includes(i);
+          return fast ? 150 : (hold ? 220 : 165);
+        })
+      },
+      {
+        id: "22eat_cookie",
+        name: "22. 吃星星糖霜曲奇（64帧超流畅版）",
+        sheet: "../成品/22eat_cookie_sheet（吃曲奇_图集）.webp",
+        anim: "../成品/22eat_cookie（吃曲奇_动画）.webp",
+        cols: 8,
+        rows: 8,
+        frames: 64,
+        cellSize: 384,
+        quote: "咔嚓咔嚓～星星曲奇甜滋滋的！🍪✨",
+        durations: Array.from({ length: 64 }, (_, i) => {
+          const fast = i >= 12 && i < 34;
+          const hold = [0, 6, 7, 36, 39, 40, 42, 43, 57, 58, 63].includes(i);
+          return fast ? 110 : (hold ? 185 : 135);
+        })
+      },
+      {
+        id: "23magic_flower",
+        name: "23. 凭空生花小魔术（64帧超流畅版）",
+        sheet: "../成品/23magic_flower_sheet（凭空生花_图集）.webp",
+        anim: "../成品/23magic_flower（凭空生花_动画）.webp",
+        cols: 8,
+        rows: 8,
+        frames: 64,
+        cellSize: 384,
+        quote: "当当～送你一朵魔法小玫瑰！🌹✨",
+        durations: Array.from({ length: 64 }, (_, i) => {
+          const fast = (i >= 9 && i < 16) || (i >= 28 && i < 35);
+          const hold = [0, 21, 22, 24, 25, 42, 45, 57, 63].includes(i);
+          return fast ? 115 : (hold ? 185 : 135);
+        })
+      },
+      {
+        id: "24spirit_butterfly",
+        name: "24. 星光灵蝶环绕（64帧超流畅版）",
+        sheet: "../成品/24spirit_butterfly_sheet（灵蝶环绕_图集）.webp",
+        anim: "../成品/24spirit_butterfly（灵蝶环绕_动画）.webp",
+        cols: 8,
+        rows: 8,
+        frames: 64,
+        cellSize: 384,
+        quote: "哇～星光小蝴蝶飞出来啦！🦋✨",
+        durations: Array.from({ length: 64 }, (_, i) => {
+          const hold = [0, 4, 34, 44, 49, 54, 59, 63].includes(i);
+          return hold ? 185 : 130;
+        })
+      },
+      {
+        id: "25curtsy_bow",
+        name: "25. 优雅屈膝礼仪（64帧超流畅版）",
+        sheet: "../成品/25curtsy_bow_sheet（屈膝礼仪_图集）.webp",
+        anim: "../成品/25curtsy_bow（屈膝礼仪_动画）.webp",
+        cols: 8,
+        rows: 8,
+        frames: 64,
+        cellSize: 384,
+        quote: "请多指教呀～✨",
+        durations: Array.from({ length: 64 }, (_, i) => {
+          const hold = [0, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 55, 56, 63].includes(i);
+          const fast = (i >= 4 && i < 15) || (i >= 36 && i < 48);
+          return hold ? 175 : (fast ? 115 : 130);
         })
       }
     ];
